@@ -25,16 +25,27 @@ class _Done:
     pass
 
 
+class _Unset:
+    pass
+
+
 class Result(Generic[T]):
     __slots__ = ("result", "exception")
 
-    def __init__(self, result: Optional[T] = None, exception: Optional[Exception] = None) -> None:
+    def __init__(self, result: Union[Type[_Unset], T] = _Unset, exception: Optional[Exception] = None) -> None:
         self.result = result
         self.exception = exception
+
+    def __eq__(self, other) -> bool:
+        return (self.result, self.exception) == (other.result, other.exception)
+
+    def __lt__(self, other) -> bool:
+        return (self.result, self.exception) < (other.result, other.exception)
 
     def get(self) -> T:
         if self.exception is not None:
             raise self.exception
+        assert self.result is not _Unset
         return self.result
 
     def __str__(self) -> str:
@@ -57,28 +68,23 @@ class Result(Generic[T]):
     @classmethod
     def from_future(cls, f: "Future[T]") -> "Result[T]":
         try:
-            result = f.result()
-            exception = None
+            return cls(result=f.result())
         except Exception:
-            result = None
-            exception = f._exception
-        return cls(result, exception)
+            return cls(exception=f._exception)
 
     @classmethod
     def from_func(cls, func: Callable, *args, **kwargs) -> "Result[T]":
         try:
-            result = func(*args, **kwargs)
-            exception = None
+            return cls(result=func(*args, **kwargs))
         except Exception as e:
-            result = None
-            exception = e
-        return Result(result, exception)
+            return cls(exception=e)
 
 
 class MyThread(threading.Thread):
-    def raise_exc(self, exception: BaseException) -> None:
+    def raise_exc(self, exception: Type[BaseException]) -> None:
         # https://docs.python.org/3/c-api/init.html#c.PyThreadState_SetAsyncExc
 
+        assert self.native_id is not None
         thread_id = ctypes.c_ulong(self.native_id)
 
         ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, ctypes.py_object(exception))
@@ -87,6 +93,18 @@ class MyThread(threading.Thread):
         elif ret > 1:
             ctypes.pythonapi.PyThreadState_SetAsyncExc(thread_id, None)
             raise SystemError("PyThreadState_SetAsyncExc failed")
+
+
+class MyBoundedSemaphore(threading.BoundedSemaphore):
+    def notify(self, n: int = 1) -> None:
+        with self._cond:
+            self._cond.notify(n)
+
+    def notify_all(self) -> None:
+        print("MyBoundedSemaphore.notify_all waiting for lock")
+        with self._cond:
+            print("MyBoundedSemaphore.notify_all acquired lock")
+            self._cond.notify_all()
 
 
 class ThreadPoolExecutorWithFuture(ThreadPoolExecutor):
@@ -125,7 +143,7 @@ def _process_queue(
             if item is _Done:
                 break
 
-            future = Future()
+            future: "Future[T]" = Future()
             future._waiters.append(waiter)
             futures.add(future)
             executor.submit(future, func, item)
@@ -163,8 +181,8 @@ def process(
 ) -> Iterator[Result[T]]:
     """has some race conditions and/or deadlocks"""
 
-    q = Queue(maxsize)
-    futures = set()
+    q: "Queue[Union[Type[_Done], S]]" = Queue(maxsize)
+    futures: "Set[Future[T]]" = set()
     waiter = _AsCompletedWaiter()
 
     threading.Thread(target=_iter_to_queue, args=(it, q)).start()
@@ -181,7 +199,7 @@ def _map_queue(
     while True:
         while True:
             try:
-                item = in_q.get(timeout=1)
+                item = in_q.get()
                 break
             except Empty:
                 pass
@@ -218,8 +236,9 @@ def _read_out_queue(
                 num_workers -= 1
                 if num_workers == 0:
                     break
-            task.update(completed=i, **update)
-            yield item
+            else:
+                task.update(completed=i, **update)
+                yield item
 
 
 def process_2(
@@ -229,8 +248,8 @@ def process_2(
     num_workers: int,
     progress: ProgressT,
 ) -> Iterator[Result[T]]:
-    in_q = Queue(maxsize)
-    out_q = Queue(maxsize)
+    in_q: "Queue[Union[Type[_Done], S]]" = Queue(maxsize)
+    out_q: "Queue[Optional[Result[T]]]" = Queue(maxsize)
     update = {"total": 0}
 
     threading.Thread(target=_read_queue_update_total, args=(it, in_q, update, num_workers, progress)).start()
@@ -248,14 +267,20 @@ def _read_queue_update_total_semaphore(
     num_workers: int,
     progress: ProgressT,
 ) -> None:
-    for item in progress.track(it, description="reading"):
+    try:
+        for item in progress.track(it, description="reading"):
+            semaphore.acquire()  # notifying it allows waiting exceptions to interrupt it
+            update["total"] += 1
+            in_q.put(item)
+    except KeyboardInterrupt:
         while True:
-            if semaphore.acquire(timeout=1):
+            try:
+                in_q.get_nowait()
+            except Empty:
                 break
-        update["total"] += 1
-        in_q.put(item)
-    for _ in range(num_workers):
-        in_q.put(_Done)
+    finally:
+        for _ in range(num_workers):
+            in_q.put(_Done)
 
 
 def _read_out_queue_semaphore(
@@ -287,14 +312,15 @@ def process_3(
 ) -> Iterator[Result[T]]:
     assert maxsize >= num_workers
 
-    in_q = SimpleQueue()
-    out_q = SimpleQueue()
+    in_q: "SimpleQueue[Union[Type[_Done], S]]" = SimpleQueue()
+    out_q: "SimpleQueue[Optional[Result[T]]]" = SimpleQueue()
     update = {"total": 0}
-    semaphore = threading.BoundedSemaphore(maxsize)
+    semaphore = MyBoundedSemaphore(maxsize)
     threads: List[MyThread] = []
 
     t_read = MyThread(
         target=_read_queue_update_total_semaphore,
+        name="task-reader",
         args=(it, in_q, semaphore, update, num_workers, progress),
     )
     t_read.start()
@@ -317,8 +343,8 @@ def process_3(
     try:
         yield from _read_out_queue_semaphore(out_q, update, semaphore, num_workers, progress)
     except KeyboardInterrupt:
-        for thread in threads:
-            thread.raise_exc(KeyboardInterrupt)
+        t_read.raise_exc(KeyboardInterrupt)
+        semaphore.notify_all()  # this can deadlock
         for thread in threads:
             thread.join()
         raise
@@ -355,7 +381,7 @@ def executor_ordered(
     num_workers: int,
     progress: ProgressT,
 ) -> Iterator[Result[T]]:
-    q = Queue(maxsize)
+    q: "Queue[Optional[Future[T]]]" = Queue(maxsize)
     with ThreadPoolExecutor(num_workers) as ex:
         threading.Thread(target=_submit_from_queue, args=(func, it, ex, q)).start()
         yield from progress.track(_queue_reader(q))
@@ -448,7 +474,7 @@ def main():
             print(list(p.track(map(identity, range(TOTAL))))[:20])
 
         for func in [
-            process_2,
+            # process_2,
             process_3,
             process,
             parallel_map_thread_unordered,
@@ -469,4 +495,16 @@ def main():
 
 
 if __name__ == "__main__":
+    from rich.logging import RichHandler
+
+    logging.basicConfig(level=logging.DEBUG, handlers=[RichHandler()])
+    record_factory = logging.getLogRecordFactory()
+
+    def clear_exc_text(*args, **kwargs):
+        record = record_factory(*args, **kwargs)
+        record.exc_info = None
+        return record
+
+    logging.setLogRecordFactory(clear_exc_text)
+
     main()

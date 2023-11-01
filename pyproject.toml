@@ -6,10 +6,18 @@ requires = [
 
 [project]
 name = "concurrex"
+readme = "readme.md"
 license = {file = "LICENSE"}
 authors = [{name = "Dobatymo", email = "dobatymo@users.noreply.github.com"}]
+requires-python = ">=3.8"
 classifiers = [
   "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
 ]
 dynamic = [
   "description",
