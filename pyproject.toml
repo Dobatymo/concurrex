@@ -1,0 +1,33 @@
+[build-system]
+build-backend = "flit_core.buildapi"
+requires = [
+  "flit_core<4,>=3.2",
+]
+
+[project]
+name = "concurrex"
+license = {file = "LICENSE"}
+authors = [{name = "Dobatymo", email = "dobatymo@users.noreply.github.com"}]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+]
+dynamic = [
+  "description",
+  "version",
+]
+dependencies = [
+  "genutility",
+  "rich",
+]
+[project.urls]
+Home = "https://github.com/Dobatymo/concurrex"
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.bandit]
+skips = ["B101"]
