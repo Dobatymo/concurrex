@@ -24,13 +24,24 @@ dynamic = [
   "version",
 ]
 dependencies = [
-  "genutility",
+  "genutility[callbacks,concurrency]>=0.0.103",
   "rich",
+  "typing-extensions>=3.7.4.3",
+]
+[project.optional-dependencies]
+fast = [
+  "atomicarray>=0.0.1",
+]
+test = [
+  "genutility[test]>=0.0.103",
 ]
 [project.urls]
 Home = "https://github.com/Dobatymo/concurrex"
 
 [tool.black]
+line-length = 120
+
+[tool.ruff]
 line-length = 120
 
 [tool.isort]
