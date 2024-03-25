@@ -36,6 +36,8 @@ jobs:
   build-and-deploy:
     needs: test
     runs-on: ubuntu-20.04
+    permissions:
+      id-token: write
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v4
@@ -46,6 +48,3 @@ jobs:
         python -m pip install build
         python -m build .
     - uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        user: __token__
-        password: ${{ secrets.pypi_password }}

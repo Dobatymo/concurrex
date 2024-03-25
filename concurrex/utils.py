@@ -1,8 +1,6 @@
 import threading
 from typing import Callable, Generic, Iterator, Optional, Tuple, TypeVar, Union
 
-import cv2
-
 T = TypeVar("T")
 ExceptHookFuncT = Callable[[threading.ExceptHookArgs], None]
 
@@ -29,19 +27,22 @@ class ThreadingExceptHook:
 
 class CvWindow:
     def __init__(self, name: Optional[str] = None) -> None:
+        import cv2
+
         self.name = name or str(id(self))
+        self.cv2 = cv2
 
     def show(self, image, title: Optional[str] = None) -> None:
-        cv2.imshow(self.name, image)
+        self.cv2.imshow(self.name, image)
         if title is not None:
-            cv2.setWindowTitle(self.name, title)
-        cv2.waitKey(1)
+            self.cv2.setWindowTitle(self.name, title)
+        self.cv2.waitKey(1)
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        cv2.destroyWindow(self.name)
+        self.cv2.destroyWindow(self.name)
 
 
 class MyBoundedSemaphore(threading.BoundedSemaphore):
