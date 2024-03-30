@@ -1,28 +1,71 @@
 import threading
-from typing import Callable, Generic, Iterator, Optional, Tuple, TypeVar, Union
+from concurrent.futures._base import FINISHED, Future
+from functools import wraps
+from typing import Callable, Generic, Iterable, Iterator, Optional, Tuple, Type, TypeVar, Union
+
+from genutility.callbacks import Progress as ProgressT
 
 T = TypeVar("T")
-ExceptHookFuncT = Callable[[threading.ExceptHookArgs], None]
+S = TypeVar("S")
 
 
-class ThreadingExceptHook:
+class _Unset:
+    pass
+
+
+class Result(Generic[T]):
+    __slots__ = ("result", "exception")
+
     def __init__(
         self,
-        user_excepthook: Callable[[threading.ExceptHookArgs, ExceptHookFuncT], None],
+        result: Union[Type[_Unset], T] = _Unset,
+        exception: Optional[Exception] = None,
     ) -> None:
-        self.user_excepthook = user_excepthook
-        self.old_excepthook: Optional[ExceptHookFuncT] = None
+        self.result = result
+        self.exception = exception
 
-    def new_excepthook(self, args: threading.ExceptHookArgs) -> None:
-        self.user_excepthook(args, self.old_excepthook)
+    def __eq__(self, other) -> bool:
+        return (self.result, self.exception) == (other.result, other.exception)
 
-    def __enter__(self) -> "ThreadingExceptHook":
-        self.old_excepthook = threading.excepthook
-        threading.excepthook = self.new_excepthook
-        return self
+    def __lt__(self, other) -> bool:
+        return (self.result, self.exception) < (other.result, other.exception)
 
-    def __exit__(self, *args):
-        threading.excepthook = self.old_excepthook
+    def get(self) -> T:
+        if self.exception is not None:
+            raise self.exception
+        assert self.result is not _Unset
+        return self.result
+
+    def __str__(self) -> str:
+        if self.exception is not None:
+            return str(self.exception)
+        return str(self.result)
+
+    def __repr__(self) -> str:
+        if self.exception is not None:
+            return repr(self.exception)
+        return repr(self.result)
+
+    @classmethod
+    def from_finished_future(cls, f: "Future[T]") -> "Result[T]":
+        if f._state != FINISHED:
+            raise RuntimeError(f"The future is not yet finished: {f._state}")
+
+        return cls(f._result, f._exception)
+
+    @classmethod
+    def from_future(cls, f: "Future[T]") -> "Result[T]":
+        try:
+            return cls(result=f.result())
+        except Exception:
+            return cls(exception=f._exception)
+
+    @classmethod
+    def from_func(cls, func: Callable, *args, **kwargs) -> "Result[T]":
+        try:
+            return cls(result=func(*args, **kwargs))
+        except Exception as e:
+            return cls(exception=e)
 
 
 class CvWindow:
@@ -43,55 +86,6 @@ class CvWindow:
 
     def __exit__(self, *args):
         self.cv2.destroyWindow(self.name)
-
-
-class MyBoundedSemaphore(threading.BoundedSemaphore):
-    def notify(self, n: int = 1) -> None:
-        with self._cond:
-            self._cond.notify(n)
-
-    def notify_all(self, blocking: bool = True, timeout: int = -1) -> bool:
-        if not self._cond.acquire(blocking, timeout):
-            return False
-        try:
-            self._cond.notify_all()
-        finally:
-            self._cond.release()
-        return True
-
-
-class DummySemaphore:
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._value = 0
-
-    def acquire(self, blocking=True, timeout=None) -> None:
-        with self._lock:
-            self._value += 1
-
-    def release(self, n=1) -> None:
-        if n < 1:
-            raise ValueError("n must be one or more")
-        with self._lock:
-            if self._value - n < 0:
-                raise ValueError("Semaphore released too many times")
-            self._value -= n
-
-    def notify(self, n: int = 1) -> None:
-        pass
-
-    def notify_all(self, blocking: bool = True, timeout: int = -1) -> bool:
-        return True
-
-
-SemaphoreT = Union[MyBoundedSemaphore, DummySemaphore]
-
-
-def make_semaphore(n: int) -> SemaphoreT:
-    if n > 0:
-        return MyBoundedSemaphore(n)
-    else:
-        return DummySemaphore()
 
 
 class NumArrayPython(Generic[T]):
@@ -145,7 +139,26 @@ class NumArrayAtomics:
         self.a.fetch_sub(other.val)
         return self
 
+    def to_tuple(self) -> Tuple[int, ...]:
+        return tuple(self)
+
     def __iter__(self) -> Iterator[int]:
         rem, c = divmod(self.a.load(), 2**16)
         a, b = divmod(rem, 2**16)
         return iter([a, b, c])
+
+
+def with_progress(_func):
+    @wraps(_func)
+    def inner(
+        func: Callable[[S], T],
+        it: Iterable[S],
+        maxsize: int,
+        num_workers: int,
+        progress: ProgressT,
+    ):
+        it_in = progress.track(it, description="reading")
+        it_out = _func(func, it_in, maxsize, num_workers)
+        yield from progress.track(it_out, description="processed")
+
+    return inner

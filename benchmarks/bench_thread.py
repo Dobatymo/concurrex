@@ -5,14 +5,15 @@ from genutility.rich import Progress
 from genutility.time import PrintStatementTime
 from rich.progress import Progress as RichProgress
 
-from concurrex.thread import (
-    _map_unordered_exe,
-    _map_unordered_sem,
-    _map_unordered_tp,
-    executor_ordered,
-    parallel_map_thread_ordered,
-    parallel_map_thread_unordered,
+from concurrex._thread import map_unordered_boundedqueue, map_unordered_semaphore
+from concurrex._thread_concurrent import (
+    map_ordered_executor_map,
+    map_ordered_parallel_map,
+    map_unordered_executor_map,
+    map_unordered_parallel_map,
 )
+from concurrex._thread_exe import map_ordered_executor, map_unordered_executor_in_thread
+from concurrex._thread_pool import map_unordered_concurrex
 
 
 def main():
@@ -28,21 +29,21 @@ def main():
             print(list(p.track(map(identity, range(TOTAL))))[:20])
 
         for func in [
-            # _map_unordered_bq,
-            _map_unordered_sem,
-            _map_unordered_tp,
-            _map_unordered_exe,
-            parallel_map_thread_unordered,
-            # executor_map_thread_unordered,
+            map_unordered_semaphore,
+            map_unordered_concurrex,
+            map_unordered_executor_in_thread,
+            map_unordered_parallel_map,
+            map_unordered_boundedqueue,
+            map_unordered_executor_map,
         ]:
             print("unordered", "thread", func.__name__)
             with PrintStatementTime():
                 print(list(func(identity, range(TOTAL), BUFSIZE, NUM_WORKERS, p))[:20])
 
         for func in [
-            executor_ordered,
-            parallel_map_thread_ordered,
-            # executor_map_thread_ordered,
+            map_ordered_executor,
+            map_ordered_parallel_map,
+            map_ordered_executor_map,
         ]:
             print("ordered", "thread", func.__name__)
             with PrintStatementTime():

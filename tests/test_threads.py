@@ -13,8 +13,9 @@ from genutility.func import identity
 from genutility.test import MyTestCase, parametrize, parametrize_product, parametrize_starproduct, repeat
 from genutility.time import MeasureTime
 
-from concurrex import map_unordered_mt
-from concurrex.thread import Result, ThreadedIterator, ThreadPool, _map_unordered_tp
+from concurrex._thread import Result, map_unordered_semaphore
+from concurrex._thread_pool import ThreadPool, map_unordered_concurrex
+from concurrex.thread import ThreadedIterator
 
 T = TypeVar("T")
 
@@ -97,7 +98,7 @@ class ThreadTest(MyTestCase):
 
     @parametrize_product(
         [[], range(1), range(10), range(100), range(1000), range(10000)],
-        [map_unordered_mt, _map_unordered_tp],
+        [map_unordered_semaphore, map_unordered_concurrex],
     )
     def test_lists(self, seq, func):
         bufsize = 10
@@ -108,7 +109,7 @@ class ThreadTest(MyTestCase):
 
     @parametrize_product(
         [[], range(1), range(10), range(100), range(1000), range(10000)],
-        [map_unordered_mt, _map_unordered_tp],
+        [map_unordered_semaphore, map_unordered_concurrex],
     )
     def test_range(self, it, func):
         bufsize = 10
@@ -119,7 +120,7 @@ class ThreadTest(MyTestCase):
 
     @parametrize_starproduct(
         [[0, 0.1, 10], [0.1, 0, 0], [0, 0, 0], [0.1, 0.1, 0]],
-        [[map_unordered_mt], [_map_unordered_tp]],
+        [[map_unordered_semaphore], [map_unordered_concurrex]],
     )
     def test_provide_collect(self, provide_wait, collect_wait, min_size, func):
         memory = CheckMemory()
@@ -142,7 +143,7 @@ class ThreadTest(MyTestCase):
 
     @parametrize_starproduct(
         [(1, 100), (10, 100), (20, 100), (100, 100)],
-        [[map_unordered_mt], [_map_unordered_tp]],
+        [[map_unordered_semaphore], [map_unordered_concurrex]],
         [[identity], [identity_random_sleep]],
     )
     def test_limited(self, limit, total, func, mapfunc):
@@ -189,7 +190,7 @@ class ThreadTest(MyTestCase):
         bufsize = 10
         num_workers = 4
         it = range(100000)
-        self._call_and_kill(map_unordered_mt, identity, it, bufsize, num_workers, 0.1)
+        self._call_and_kill(map_unordered_semaphore, identity, it, bufsize, num_workers, 0.1)
 
     @expectedFailure
     @repeat(10)
@@ -198,7 +199,7 @@ class ThreadTest(MyTestCase):
         num_workers = 4
         it = range(100000)
         delta = self._call_and_kill(
-            map_unordered_mt,
+            map_unordered_semaphore,
             partial(identity_sleep, seconds=2),
             it,
             bufsize,
