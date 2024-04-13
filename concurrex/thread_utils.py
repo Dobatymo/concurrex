@@ -3,6 +3,8 @@ import logging
 import threading
 from typing import Callable, Optional, Type, Union
 
+from typing_extensions import Self
+
 ExceptHookFuncT = Callable[[threading.ExceptHookArgs], None]
 
 
@@ -36,7 +38,7 @@ class ThreadingExceptHook:
     def new_excepthook(self, args: threading.ExceptHookArgs) -> None:
         self.user_excepthook(args, self.old_excepthook)
 
-    def __enter__(self) -> "ThreadingExceptHook":
+    def __enter__(self) -> Self:
         self.old_excepthook = threading.excepthook
         threading.excepthook = self.new_excepthook
         return self

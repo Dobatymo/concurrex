@@ -4,6 +4,7 @@ from functools import wraps
 from typing import Callable, Generic, Iterable, Iterator, Optional, Tuple, Type, TypeVar, Union
 
 from genutility.callbacks import Progress as ProgressT
+from typing_extensions import Self
 
 T = TypeVar("T")
 S = TypeVar("S")
@@ -19,7 +20,7 @@ class Result(Generic[T]):
     def __init__(
         self,
         result: Union[Type[_Unset], T] = _Unset,
-        exception: Optional[Exception] = None,
+        exception: Optional[BaseException] = None,
     ) -> None:
         self.result = result
         self.exception = exception
@@ -81,7 +82,7 @@ class CvWindow:
             self.cv2.setWindowTitle(self.name, title)
         self.cv2.waitKey(1)
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args):
@@ -93,13 +94,13 @@ class NumArrayPython(Generic[T]):
         self._arr = list(args)
         self._lock = threading.Lock()
 
-    def __iadd__(self, other: "NumArrayPython") -> "NumArrayPython":
+    def __iadd__(self, other: "NumArrayPython") -> Self:
         with self._lock:
             for i in range(len(self._arr)):
                 self._arr[i] += other._arr[i]
         return self
 
-    def __isub__(self, other: "NumArrayPython") -> "NumArrayPython":
+    def __isub__(self, other: "NumArrayPython") -> Self:
         with self._lock:
             for i in range(len(self._arr)):
                 self._arr[i] -= other._arr[i]
@@ -131,11 +132,11 @@ class NumArrayAtomics:
     def __len__(self) -> int:
         return 3
 
-    def __iadd__(self, other: NumArrayAtomicsInt) -> "NumArrayAtomics":
+    def __iadd__(self, other: NumArrayAtomicsInt) -> Self:
         self.a.fetch_add(other.val)
         return self
 
-    def __isub__(self, other: NumArrayAtomicsInt) -> "NumArrayAtomics":
+    def __isub__(self, other: NumArrayAtomicsInt) -> Self:
         self.a.fetch_sub(other.val)
         return self
 

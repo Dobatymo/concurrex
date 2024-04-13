@@ -5,7 +5,7 @@ from queue import Empty, Queue, SimpleQueue
 from typing import Callable, Generic, Iterable, Iterator, List, NamedTuple, Optional, Tuple, Type, TypeVar, Union
 
 from genutility.callbacks import Progress as ProgressT
-from typing_extensions import TypeAlias
+from typing_extensions import Self, TypeAlias
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
 from .utils import Result
@@ -269,7 +269,7 @@ class ThreadPool(Generic[T]):
 
         t_read.join()
 
-    def __enter__(self) -> "ThreadPool[T]":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):

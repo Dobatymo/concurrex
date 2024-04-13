@@ -53,7 +53,10 @@ def main():
 if __name__ == "__main__":
     from rich.logging import RichHandler
 
-    logging.basicConfig(level=logging.DEBUG, handlers=[RichHandler()])
+    handler = RichHandler(log_time_format="%Y-%m-%d %H-%M-%S%Z")
+    FORMAT = "%(message)s"
+    logging.basicConfig(level=logging.DEBUG, format=FORMAT, handlers=[handler])
+
     record_factory = logging.getLogRecordFactory()
 
     def clear_exc_text(*args, **kwargs):
