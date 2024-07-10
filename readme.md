@@ -4,7 +4,7 @@ The helpers in the Python standard library for concurrent execution, like `threa
 
 ## Requirements
 
-The library works on Python 3.8+, but a important Python bug (bpo-29988) was fixed in Python 3.10, which makes ctrl-c handling much more reliable.
+The library works on Python 3.8+, but an important Python bug (bpo-29988) was fixed in Python 3.10, which makes ctrl-c handling much more reliable.
 
 ## Examples
 
