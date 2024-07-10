@@ -104,8 +104,8 @@ def map_unordered_semaphore(
     with ThreadingExceptHook(threading_excepthook):
         try:
             yield from _read_out_queue_semaphore(out_q, update, semaphore, num_workers, progress)
-        except (KeyboardInterrupt, GeneratorExit):
-            # logging.debug("Caught %s, trying to clean up", type(e).__name__)
+        except (KeyboardInterrupt, GeneratorExit) as e:
+            logging.debug("Caught %s, trying to clean up", type(e).__name__)
             t_read.raise_exc(KeyboardInterrupt)
             if not semaphore.notify_all(timeout=10):  # this can deadlock
                 raise RuntimeError("deadlock")
