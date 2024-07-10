@@ -1,10 +1,26 @@
 import threading
 from concurrent.futures._base import FINISHED, Future
 from functools import wraps
-from typing import Callable, Generic, Iterable, Iterator, Optional, Tuple, Type, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    Iterator,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from genutility.callbacks import Progress as ProgressT
 from typing_extensions import Self
+
+if TYPE_CHECKING:
+    import numpy as np
 
 T = TypeVar("T")
 S = TypeVar("S")
@@ -12,6 +28,10 @@ S = TypeVar("S")
 
 class _Unset:
     pass
+
+
+def get_extra(self: Any) -> Dict[str, str]:
+    return {"object": f"{type(self).__name__}-{id(self):x}"}
 
 
 class Result(Generic[T]):
@@ -22,6 +42,9 @@ class Result(Generic[T]):
         result: Union[Type[_Unset], T] = _Unset,
         exception: Optional[BaseException] = None,
     ) -> None:
+        if (result is _Unset) == (exception is None):
+            raise ValueError("Either result or exception must be given")
+
         self.result = result
         self.exception = exception
 
@@ -31,10 +54,13 @@ class Result(Generic[T]):
     def __lt__(self, other) -> bool:
         return (self.result, self.exception) < (other.result, other.exception)
 
+    def __hash__(self) -> int:
+        return hash((self.result, self.exception))
+
     def get(self) -> T:
         if self.exception is not None:
             raise self.exception
-        assert self.result is not _Unset
+        assert self.result is not _Unset  # for mypy
         return self.result
 
     def __str__(self) -> str:
@@ -75,8 +101,10 @@ class CvWindow:
 
         self.name = name or str(id(self))
         self.cv2 = cv2
+        self.cleanup = False
 
-    def show(self, image, title: Optional[str] = None) -> None:
+    def show(self, image: "np.ndarray", title: Optional[str] = None) -> None:
+        self.cleanup = True
         self.cv2.imshow(self.name, image)
         if title is not None:
             self.cv2.setWindowTitle(self.name, title)
@@ -86,7 +114,8 @@ class CvWindow:
         return self
 
     def __exit__(self, *args):
-        self.cv2.destroyWindow(self.name)
+        if self.cleanup:
+            self.cv2.destroyWindow(self.name)
 
 
 class NumArrayPython(Generic[T]):

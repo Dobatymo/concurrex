@@ -1,6 +1,10 @@
 # concurrex (concurrent execution)
 
-The helpers in the Python standard library for concurrent execution, like `threading`, `multiprocessing`, `concurrent.futures` are quite lacking.
+The helpers in the Python standard library for concurrent execution, like `threading`, `multiprocessing`, `concurrent.futures` are lacking for certain use cases like backpressure and flow control.
+
+## Requirements
+
+The library works on Python 3.8+, but a important Python bug (bpo-29988) was fixed in Python 3.10, which makes ctrl-c handling much more reliable.
 
 ## Examples
 

@@ -12,6 +12,7 @@ from genutility.callbacks import Progress
 from genutility.func import identity
 from genutility.test import MyTestCase, parametrize, parametrize_product, parametrize_starproduct, repeat
 from genutility.time import MeasureTime
+from typing_extensions import Self
 
 from concurrex._thread import Result, map_unordered_semaphore
 from concurrex._thread_pool import ThreadPool, map_unordered_concurrex
@@ -70,15 +71,22 @@ class Watcher(threading.Thread):
         self.period = period
         self.func = func
         self.results: List[T] = []
-        self.running = True
+        self._stop = threading.Event()
+
+    def __enter__(self) -> Self:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.stop()
 
     def run(self) -> None:
-        while self.running:
+        self.results.append(self.func())
+        while not self._stop.wait(self.period):
             self.results.append(self.func())
-            sleep(self.period)
 
     def stop(self) -> None:
-        self.running = False
+        self._stop.set()
 
 
 def identity_sleep(x: T, *, seconds: float) -> T:
@@ -89,6 +97,102 @@ def identity_sleep(x: T, *, seconds: float) -> T:
 def identity_random_sleep(x: T) -> T:
     sleep(random() / 10)  # nosec
     return x
+
+
+def range_sleep(stop: int, seconds: float):
+    for i in range(stop):
+        yield i
+        sleep(seconds)
+
+
+def genrange(stop):
+    yield from range(stop)
+
+
+class ThreadedIteratorTest(MyTestCase):
+    """Some of the tests leak resources since the thread is not closed correctly.
+    This is done so that closing can be tested seperatly and incorrect closing methods don't bloc
+    otherwise unrelated tests.
+    The leaked threads are demons which will be clean up after test/process exit.
+    """
+
+    def test_basic(self):
+        length = 10
+        it = range(length)
+        truth = list(it)
+        tit = ThreadedIterator(it, 3)
+
+        self.assertEqual(truth, list(tit))
+        self.assertEqual(length, tit.processed())
+        self.assertFalse(tit.thread.is_alive())
+
+    def test_full(self):
+        maxsize = 3
+        it = range_sleep(10, 0.01)
+        tit = ThreadedIterator(it, maxsize)
+        tit._wait_for_queue_full()
+
+        self.assertIn(tit.processed(), [maxsize, maxsize - 1])
+        self.assertTrue(tit.thread.is_alive())  # leak
+
+    def test_len(self):
+        length = 10
+        maxsize = 3
+        tit = ThreadedIterator(range(length), maxsize)
+        result = len(tit)
+
+        self.assertEqual(length, result)
+        self.assertTrue(tit.thread.is_alive())  # leak
+
+    def test_len_fail(self):
+        length = 10
+        tit = ThreadedIterator((i for i in range(length)), 3)
+        with self.assertRaises(TypeError):
+            len(tit)
+        self.assertTrue(tit.thread.is_alive())  # leak
+
+    def test_gen_close(self):
+        gen = genrange(10)
+        tit = ThreadedIterator(gen, 3)
+        result1 = list(islice(tit, 5))
+        result_close = [r.get() for r in tit.close()]
+        result2 = list(tit)
+        remaining = list(gen)
+        buffer = [r.get() for r in tit.buffer]
+
+        self.assertEqual([0, 1, 2, 3, 4], result1)
+        self.assertIn(result_close, [[], [5], [5, 6], [5, 6, 7]])
+        self.assertIn(result2, [[], [5], [5, 6], [5, 6, 7], [5, 6, 7, 8]])
+        self.assertEqual([], remaining)  # because it was closed as well
+        self.assertEqual([], buffer)  # drained by close()
+        self.assertFalse(tit.thread.is_alive())
+
+    def test_context(self):
+        gen = genrange(10)
+        with ThreadedIterator(gen, 3) as tit:
+            result1 = list(islice(tit, 5))
+
+        self.assertEqual([0, 1, 2, 3, 4], result1)
+
+    def test_context_sleep(self):
+        gen = genrange(10)
+        with ThreadedIterator(gen, 3) as tit:
+            result1 = list(islice(tit, 5))
+            sleep(0.1)
+
+        self.assertEqual([0, 1, 2, 3, 4], result1)
+
+    def test_gen_slice(self):
+        gen = genrange(10)
+        tit = ThreadedIterator(gen, 3)
+        result = list(islice(tit, 5))
+        remaining = list(gen)
+        buffer = [r.get() for r in tit.buffer]
+
+        self.assertEqual([0, 1, 2, 3, 4], result)
+        self.assertIn(remaining, [[9], [8, 9], [7, 8, 9], [6, 7, 8, 9], [5, 6, 7, 8, 9]])
+        self.assertIn(buffer, [[], [5], [5, 6], [5, 6, 7]])
+        self.assertTrue(tit.thread.is_alive())  # leak
 
 
 class ThreadTest(MyTestCase):
@@ -129,17 +233,21 @@ class ThreadTest(MyTestCase):
         num_workers = 4
         truth = list(range(30))
 
-        thread = Watcher(lambda: len(memory))
-        thread.start()
-        result = memory.collect(
-            func(identity, it, bufsize, num_workers, self.progress),
-            seconds=collect_wait,
-        )
-        self.assertUnorderedSeqEqual(truth, result)
-        thread.stop()
+        with Watcher(lambda: len(memory)) as thread:
+            result = memory.collect(
+                func(identity, it, bufsize, num_workers, self.progress),
+                seconds=collect_wait,
+            )
+            self.assertUnorderedSeqEqual(truth, result)
 
-        self.assertLessEqual(max(thread.results), bufsize)
-        self.assertGreaterEqual(max(thread.results), min_size)
+        if thread.results:
+            max_items_processed_simultaneously = max(thread.results)
+            self.assertLessEqual(
+                max_items_processed_simultaneously, bufsize + 1
+            )  # plus 1 to allow for unimportant races
+            # self.assertGreaterEqual(max_items_processed_simultaneously, min_size)  # doesn't have to be true although it should
+        else:
+            self.fail("Watcher didn't catch any data. This is unusual.")
 
     @parametrize_starproduct(
         [(1, 100), (10, 100), (20, 100), (100, 100)],
@@ -185,21 +293,28 @@ class ThreadTest(MyTestCase):
                 self.fail("call wasn't interrupted")
         return delta.get()
 
-    @repeat(10000, verbose=True)
-    def _test_sigint_identity(self):
+    @parametrize(
+        (map_unordered_semaphore,),
+        (map_unordered_concurrex,),
+    )
+    @repeat(10, verbose=True)
+    def test_sigint_identity(self, func):
         bufsize = 10
         num_workers = 4
         it = range(100000)
-        self._call_and_kill(map_unordered_semaphore, identity, it, bufsize, num_workers, 0.1)
+        self._call_and_kill(func, identity, it, bufsize, num_workers, 0.1)
 
-    @expectedFailure
-    @repeat(10)
-    def _test_sigint_sleep(self):
+    @parametrize(
+        (map_unordered_semaphore,),
+        (map_unordered_concurrex,),
+    )
+    @expectedFailure  # sleep cannot be interrupted
+    def test_sigint_sleep(self, func):
         bufsize = 10
         num_workers = 4
         it = range(100000)
         delta = self._call_and_kill(
-            map_unordered_semaphore,
+            func,
             partial(identity_sleep, seconds=2),
             it,
             bufsize,
@@ -207,47 +322,6 @@ class ThreadTest(MyTestCase):
             0.1,
         )
         self.assertLessEqual(delta, 1.0)
-
-    def test_ThreadedIterator_1(self):
-        it = range(10)
-        truth = list(it)
-        result = list(ThreadedIterator(it, 3))
-
-        self.assertEqual(truth, result)
-
-    def test_ThreadedIterator_gen_close(self):
-        def genfunc():
-            yield from range(10)
-
-        gen = genfunc()
-        tit = ThreadedIterator(gen, 3)
-        result1 = list(islice(tit, 5))
-        tit.close()
-        result2 = list(tit)
-        remaining = list(gen)
-        buffer = [r.get() for r in tit.buffer]
-
-        self.assertEqual([0, 1, 2, 3, 4], result1)
-        truths = ([5], [5, 6], [5, 6, 7], [5, 6, 7, 8])
-        self.assertIn(result2, truths)
-        self.assertEqual([], remaining)
-        self.assertEqual([], buffer)
-
-    def test_ThreadedIterator_gen_slice(self):
-        def genfunc():
-            yield from range(10)
-
-        gen = genfunc()
-        tit = ThreadedIterator(gen, 3)
-        result = list(islice(tit, 5))
-        remaining = list(gen)
-        buffer = [r.get() for r in tit.buffer]
-
-        self.assertEqual([0, 1, 2, 3, 4], result)
-        truths = [[9], [8, 9], [7, 8, 9], [6, 7, 8, 9]]
-        self.assertIn(remaining, truths)
-        truths = [[], [5], [5, 6], [5, 6, 7]]
-        self.assertIn(buffer, truths)
 
     @parametrize(
         ([],),

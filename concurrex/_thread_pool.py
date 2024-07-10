@@ -8,7 +8,7 @@ from genutility.callbacks import Progress as ProgressT
 from typing_extensions import Self, TypeAlias
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
-from .utils import Result
+from .utils import Result, get_extra
 
 try:
     from atomicarray import ArrayInt32 as NumArray
@@ -44,7 +44,9 @@ class Executor(Generic[T]):
     def __init__(self, threadpool: "ThreadPool", bufsize: int = 0) -> None:
         self.threadpool = threadpool
         self.semaphore = make_semaphore(bufsize)
-        assert not self.threadpool.signal_threads()
+        active_threads = self.threadpool._signal_threads()
+        if active_threads:
+            raise RuntimeError(f"{active_threads} threads already active")
 
     def execute(self, func: Callable[[S], T], *args, **kwargs) -> None:
         """Runs `func` in a worker thread and returns"""
@@ -119,6 +121,8 @@ class Executor(Generic[T]):
         self.threadpool._counts += NumArray(0, 0, -1)
         return item.get()
 
+    # fixme: executor could also return a context manager which calls done() on exit
+
 
 class ThreadPool(Generic[T]):
     num_workers: int
@@ -131,45 +135,68 @@ class ThreadPool(Generic[T]):
         self.total = 0
         self.in_q: WorkQueueT = SimpleQueue()
         self.out_q: ResultQueueT = SimpleQueue()
-        self.events = [threading.Event() for _ in range(self.num_workers)]
-        self.threads = [MyThread(target=self._map_queue, args=(self.in_q, self.out_q, event)) for event in self.events]
+        self.events_a = [threading.Event() for _ in range(self.num_workers)]
+        self.events_b = [threading.Event() for _ in range(self.num_workers)]
+        self.threads = [
+            MyThread(
+                target=self._map_queue,
+                name=f"ThreadPool-{id(self):x}-map_queue-{i}",
+                args=(self.in_q, self.out_q, event_a, event_b),
+            )
+            for i, (event_a, event_b) in enumerate(zip(self.events_a, self.events_b))
+        ]
 
         for t in self.threads:
             t.start()
 
-    def signal_threads(self) -> List[MyThread]:
+    def _wait_threads_idle_or_dead(self) -> None:
+        """Wait until threadpool is either idle or all threads are terminated."""
+
+        for event_b in self.events_b:
+            event_b.wait()
+
+    def _signal_threads(self) -> List[MyThread]:
         """Returns threads which where already signaled before"""
 
         out: List[MyThread] = []
-        for event, thread in zip(self.events, self.threads):
-            if event.is_set():
+        for event_a, thread in zip(self.events_a, self.threads):
+            if event_a.is_set():
                 out.append(thread)
-            event.set()
+            event_a.set()
         return out
 
     def _map_queue(
         self,
         in_q: WorkQueueT,
         out_q: ResultQueueT,
-        event: threading.Event,
+        event_a: threading.Event,
+        event_b: threading.Event,
     ) -> None:
-        counts_before = NumArray(-1, 1, 0)
-        counts_after = NumArray(0, -1, 1)
-        while event.wait():
-            while True:
-                item = in_q.get()
+        try:
+            event_b.set()
+            counts_before = NumArray(-1, 1, 0)
+            counts_after = NumArray(0, -1, 1)
+            while event_a.wait():
+                event_b.clear()
+                while True:
+                    item = in_q.get()
 
-                if item is _Done:
-                    out_q.put(None)
-                    event.clear()
-                    break
-                elif item is _Stop:
-                    return
-                else:
-                    func, args, kwargs = item
-                    self._counts += counts_before
-                    out_q.put(Result.from_func(func, *args, **kwargs))
-                    self._counts += counts_after
+                    if item is _Done:
+                        out_q.put(None)
+                        event_a.clear()
+                        event_b.set()
+                        break
+                    elif item is _Stop:
+                        event_a.clear()
+                        event_b.set()
+                        return
+                    else:
+                        func, args, kwargs = item
+                        self._counts += counts_before
+                        out_q.put(Result.from_func(func, *args, **kwargs))
+                        self._counts += counts_after
+        finally:
+            logging.debug("Thread exiting", extra=get_extra(self))
 
     def _read_it(
         self,
@@ -187,11 +214,14 @@ class ThreadPool(Generic[T]):
                 self.total += 1
                 self.in_q.put(item)
         except KeyboardInterrupt:
-            self.drain_input_queue()
+            num = self._drain_input_queue()
+            logging.debug("Interrupted, drained input queue (%d items)", num, extra=get_extra(self))
         finally:
             # add _Done values to input queue, so workers can recognize when the iterable is exhausted
             for _ in range(self.num_workers):
                 self.in_q.put(_Done)
+
+            logging.debug("Thread exiting", extra=get_extra(self))
 
     def _read_queue(
         self,
@@ -216,22 +246,25 @@ class ThreadPool(Generic[T]):
                     semaphore.release()
                     self._counts += counts
 
-    def drain_input_queue(self) -> None:
+    def _drain_input_queue(self) -> int:
         counts = NumArray(-1, 0, 0)
+        out = 0
         while True:
             try:
                 item = self.in_q.get_nowait()
+                out += 1
                 if item is not _Done and item is not _Stop:
                     self._counts += counts
             except Empty:
                 break
+        return out
 
     def num_tasks(self) -> NumTasks:
         return NumTasks(*self._counts.to_tuple())
 
     def executor(self, bufsize: int = 0) -> Executor[T]:
         """bufsize should be set to 0 when tasks are submitted and retrieved by the same thread,
-        otherwise it will deadlock when more bufsize tasks are queued.
+        otherwise it will deadlock when more than bufsize tasks are queued.
         When results are retrieved by a different thread,
         it should be set to >0 to avoid growing the queue without limit.
         """
@@ -247,24 +280,28 @@ class ThreadPool(Generic[T]):
         semaphore = make_semaphore(bufsize)
         t_read = MyThread(
             target=self._read_it,
-            name="task-reader",
+            name=f"ThreadPool-{id(self):x}-read_it",
             args=(it, total, semaphore),
         )
         t_read.start()
 
-        assert not self.signal_threads()
+        # start all waiting reader threads and raise if some were already running
+        active_threads = self._signal_threads()
+        if active_threads:
+            raise RuntimeError(f"{active_threads} threads already active")
 
         with ThreadingExceptHook(threading_excepthook):
             try:
                 yield from self._read_queue(semaphore)
             except (KeyboardInterrupt, GeneratorExit) as e:
-                logging.warning("Caught %s, trying to clean up", type(e).__name__)
+                logging.debug("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
                 t_read.raise_exc(KeyboardInterrupt)
                 if not semaphore.notify_all(timeout=10):  # this can deadlock
                     raise RuntimeError("either deadlocked or worker tasks didn't complete fast enough")
                 raise
             except BaseException as e:
-                logging.error("Caught %s, trying to clean up", type(e).__name__)
+                logging.error("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
+                # fixme: we should probably try to stop t_read here as well
                 raise
 
         t_read.join()
@@ -274,18 +311,26 @@ class ThreadPool(Generic[T]):
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_value is not None:
-            self.drain_input_queue()
+            num = self._drain_input_queue()
+            logging.debug("Caught %s, drained input queue (%d items)", exc_type.__name__, num, extra=get_extra(self))
         self.close()
 
     def close(self) -> None:
-        logging.debug("ThreadPool.close")
+        logging.debug("Closing", extra=get_extra(self))
         for _ in range(self.num_workers):
-            # stop worker threads
+            # message worker threads to stop
             self.in_q.put(_Stop)
-        if self.signal_threads():
-            logging.warning("some threads still active")
+
+        self._wait_threads_idle_or_dead()
+        # if all threads are idle here, signaling them will cause them to handle the _Stop marker and terminate
+        # if all threads are already terminated, signaling them will do nothing
+        # signaling an already active thread might lead to a deadlock, so waiting first is important
+        active_threads = self._signal_threads()
+        if active_threads:
+            raise RuntimeError(f"{active_threads} threads already active")
+
         for thread in self.threads:
-            # wait for worker threads to stop
+            # wait for worker threads to terminate
             thread.join()
 
     def map_unordered(self, func: Callable[[S], T], it: Iterable[S], bufsize: int = 0) -> Iterator[Result[T]]:
