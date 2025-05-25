@@ -17,13 +17,14 @@ from typing import (
 )
 
 from genutility.callbacks import Progress as ProgressT
-from typing_extensions import Self
+from typing_extensions import ParamSpec, Self
 
 if TYPE_CHECKING:
     import numpy as np
 
 T = TypeVar("T")
 S = TypeVar("S")
+P = ParamSpec("P")
 
 
 class _Unset:
@@ -88,7 +89,7 @@ class Result(Generic[T]):
             return cls(exception=f._exception)
 
     @classmethod
-    def from_func(cls, func: Callable, *args, **kwargs) -> "Result[T]":
+    def from_func(cls, func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> "Result[T]":
         try:
             return cls(result=func(*args, **kwargs))
         except Exception as e:
@@ -178,7 +179,9 @@ class NumArrayAtomics:
         return iter([a, b, c])
 
 
-def with_progress(_func):
+def with_progress(
+    _func: Callable[[Callable, Iterable, int, int], Iterator],
+) -> Callable[[Callable, Iterable, int, int], Iterator]:
     @wraps(_func)
     def inner(
         func: Callable[[S], T],
@@ -186,7 +189,7 @@ def with_progress(_func):
         maxsize: int,
         num_workers: int,
         progress: ProgressT,
-    ):
+    ) -> Iterator:
         it_in = progress.track(it, description="reading")
         it_out = _func(func, it_in, maxsize, num_workers)
         yield from progress.track(it_out, description="processed")

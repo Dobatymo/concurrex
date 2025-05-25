@@ -1,15 +1,16 @@
 import logging
 import threading
 from queue import Queue
-from typing import Callable, Iterable, Iterator, List, Optional, TypeVar
+from typing import Any, Callable, Iterable, Iterator, List, Optional, TypeVar
 
-from typing_extensions import Self
+from typing_extensions import ParamSpec, Self
 
 from ._thread import map_unordered_semaphore as map_unordered  # noqa: F401
 from ._thread_pool import ThreadPool  # noqa: F401
 from .utils import Result, get_extra
 
 T = TypeVar("T")
+P = ParamSpec("P")
 
 
 class ThreadedIterator(Iterator[T]):
@@ -133,7 +134,7 @@ class ThreadedIterator(Iterator[T]):
 
 
 class PeriodicExecutor(threading.Thread):
-    def __init__(self, delay: float, func: Callable, *args, **kwargs) -> None:
+    def __init__(self, delay: float, func: Callable[P, Any], *args: P.args, **kwargs: P.kwargs) -> None:
         """Runs func(*args, **kwargs) every `delay` seconds.
         The first call is after `delay` seconds.
         """
