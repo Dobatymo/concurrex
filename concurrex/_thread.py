@@ -1,12 +1,15 @@
 import logging
 import threading
 from queue import Empty, Queue, SimpleQueue
+from random import getrandbits
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Type, TypeVar, Union
 
 from genutility.callbacks import Progress as ProgressT
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
 from .utils import Result
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 S = TypeVar("S")
@@ -101,13 +104,19 @@ def map_unordered_semaphore(
         t.start()
         threads.append(t)
 
+    if logger.isEnabledFor(logging.DEBUG):
+        object_id = f"map_unordered_semaphore-{getrandbits(64):x}"
+    else:
+        object_id = None
+
     with ThreadingExceptHook(threading_excepthook):
         try:
             yield from _read_out_queue_semaphore(out_q, update, semaphore, num_workers, progress)
         except (KeyboardInterrupt, GeneratorExit) as e:
-            logging.debug("Caught %s, trying to clean up", type(e).__name__)
+            logger.debug("Caught %s, trying to clean up", type(e).__name__, extra={"object": object_id})
             t_read.raise_exc(KeyboardInterrupt)
             if not semaphore.notify_all(timeout=10):  # this can deadlock
+                logger.debug("Semaphore timed out", extra={"object": object_id})
                 raise RuntimeError("deadlock")
 
             for thread in threads:
@@ -119,7 +128,7 @@ def map_unordered_semaphore(
                 raise RuntimeError("Terminated blocking threads")
             raise
         except BaseException as e:
-            logging.error("Caught %s, trying to clean up", type(e).__name__)
+            logger.error("Caught %s, trying to clean up", type(e).__name__, extra={"object": object_id})
             raise
 
 

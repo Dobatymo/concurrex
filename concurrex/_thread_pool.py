@@ -5,6 +5,7 @@ from queue import Empty, Queue, SimpleQueue
 from typing import Callable, Generic, Iterable, Iterator, List, NamedTuple, Optional, Tuple, Type, TypeVar, Union
 
 from genutility.callbacks import Progress as ProgressT
+from genutility.time import MeasureTime
 from typing_extensions import Self, TypeAlias
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
@@ -14,6 +15,10 @@ try:
     from atomicarray import ArrayInt32 as NumArray
 except ImportError:
     from .utils import NumArrayPython as NumArray
+
+logger = logging.getLogger(__name__)
+
+JOIN_TIMEOUT = 10
 
 S = TypeVar("S")
 T = TypeVar("T")
@@ -149,11 +154,22 @@ class ThreadPool(Generic[T]):
         for t in self.threads:
             t.start()
 
+    def _slow_wait(self, events: List[threading.Event], timeout: float = JOIN_TIMEOUT) -> None:
+        with MeasureTime() as dt:
+            while events:
+                events_alive: List[threading.Event] = []
+                for event in events:
+                    if not event.wait(timeout):
+                        logger.warning(
+                            "Event %s not signaled after %.02f seconds", event, dt.get(), extra=get_extra(self)
+                        )
+                        events_alive.append(event)
+                events = events_alive
+
     def _wait_threads_idle_or_dead(self) -> None:
         """Wait until threadpool is either idle or all threads are terminated."""
 
-        for event_b in self.events_b:
-            event_b.wait()
+        self._slow_wait(self.events_b)
 
     def _signal_threads(self) -> List[MyThread]:
         """Returns threads which where already signaled before"""
@@ -169,8 +185,8 @@ class ThreadPool(Generic[T]):
         self,
         in_q: WorkQueueT,
         out_q: ResultQueueT,
-        event_a: threading.Event,
-        event_b: threading.Event,
+        event_a: threading.Event,  # ready to consume tasks when set
+        event_b: threading.Event,  # idle when set
     ) -> None:
         try:
             event_b.set()
@@ -196,7 +212,7 @@ class ThreadPool(Generic[T]):
                         out_q.put(Result.from_func(func, *args, **kwargs))
                         self._counts += counts_after
         finally:
-            logging.debug("Thread exiting", extra=get_extra(self))
+            logger.debug("Thread exiting", extra=get_extra(self))
 
     def _read_it(
         self,
@@ -215,19 +231,21 @@ class ThreadPool(Generic[T]):
                 self.in_q.put(item)
         except KeyboardInterrupt:
             num = self._drain_input_queue()
-            logging.debug("Interrupted, drained input queue (%d items)", num, extra=get_extra(self))
+            logger.debug("Interrupted, drained input queue (%d items)", num, extra=get_extra(self))
         finally:
             # add _Done values to input queue, so workers can recognize when the iterable is exhausted
             for _ in range(self.num_workers):
                 self.in_q.put(_Done)
 
-            logging.debug("Thread exiting", extra=get_extra(self))
+            logger.debug("Thread exiting", extra=get_extra(self))
 
     def _read_queue(
         self,
         semaphore: SemaphoreT,
         description: str = "processed",
     ) -> Iterator[Result[T]]:
+        """running in main thread"""
+
         num_workers = self.num_workers
         with self.progress.task(total=self.total, description=description) as task:
             completed = 0
@@ -237,6 +255,7 @@ class ThreadPool(Generic[T]):
                 item = self.out_q.get()
                 if item is None:
                     num_workers -= 1
+                    logger.debug("Queue empty. %d workers remaining.", num_workers, extra=get_extra(self))
                     if num_workers == 0:
                         break
                 else:
@@ -271,6 +290,24 @@ class ThreadPool(Generic[T]):
 
         return Executor(self, bufsize)
 
+    def _slow_join(self, threads: List[MyThread], timeout: float = JOIN_TIMEOUT) -> None:
+        with MeasureTime() as dt:
+            while threads:
+                threads_alive = []
+                for thread in threads:
+                    # wait for worker threads to terminate
+                    thread.join(timeout)
+
+                    if thread.is_alive():
+                        logger.warning(
+                            "Thread %s still alive after waiting for %.02f seconds",
+                            thread.name,
+                            dt.get(),
+                            extra=get_extra(self),
+                        )
+                        threads_alive.append(thread)
+                threads = threads_alive
+
     def _run_iter(
         self,
         it: Iterable[Tuple[Callable[[S], T], tuple, dict]],
@@ -294,17 +331,17 @@ class ThreadPool(Generic[T]):
             try:
                 yield from self._read_queue(semaphore)
             except (KeyboardInterrupt, GeneratorExit) as e:
-                logging.debug("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
+                logger.debug("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
                 t_read.raise_exc(KeyboardInterrupt)
                 if not semaphore.notify_all(timeout=10):  # this can deadlock
                     raise RuntimeError("either deadlocked or worker tasks didn't complete fast enough")
                 raise
             except BaseException as e:
-                logging.error("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
+                logger.error("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
                 # fixme: we should probably try to stop t_read here as well
                 raise
 
-        t_read.join()
+        self._slow_join([t_read])
 
     def __enter__(self) -> Self:
         return self
@@ -312,11 +349,11 @@ class ThreadPool(Generic[T]):
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_value is not None:
             num = self._drain_input_queue()
-            logging.debug("Caught %s, drained input queue (%d items)", exc_type.__name__, num, extra=get_extra(self))
+            logger.debug("Caught %s, drained input queue (%d items)", exc_type.__name__, num, extra=get_extra(self))
         self.close()
 
     def close(self) -> None:
-        logging.debug("Closing", extra=get_extra(self))
+        logger.debug("Closing", extra=get_extra(self))
         for _ in range(self.num_workers):
             # message worker threads to stop
             self.in_q.put(_Stop)
@@ -329,9 +366,7 @@ class ThreadPool(Generic[T]):
         if active_threads:
             raise RuntimeError(f"{active_threads} threads already active")
 
-        for thread in self.threads:
-            # wait for worker threads to terminate
-            thread.join()
+        self._slow_join(self.threads)
 
     def map_unordered(self, func: Callable[[S], T], it: Iterable[S], bufsize: int = 0) -> Iterator[Result[T]]:
         _it = ((func, (i,), {}) for i in it)

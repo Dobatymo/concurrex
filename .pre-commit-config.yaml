@@ -54,7 +54,7 @@ repos:
   - id: mypy
     args: [--install-types, --non-interactive, --show-error-codes]
     additional_dependencies:
-    - genutility[callbacks,concurrency]
+    - genutility[callbacks,concurrency,time]
     - rich
     - typing-extensions>=4.0.0
 - repo: https://github.com/Yelp/detect-secrets
