@@ -7,7 +7,7 @@ from typing_extensions import ParamSpec, Self
 
 from ._thread import map_unordered_semaphore as map_unordered  # noqa: F401
 from ._thread_pool import ThreadPool  # noqa: F401
-from .utils import Result, get_extra
+from .utils import Result, debug_join, debug_wait, get_extra
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -21,7 +21,7 @@ class ThreadedIterator(Iterator[T]):
     queue: "Queue[Optional[Result]]"
     exhausted: bool
 
-    def __init__(self, it: Iterable[T], maxsize: int) -> None:
+    def __init__(self, it: Iterable[T], maxsize: int, daemon: Optional[bool] = True) -> None:
         """Run `it` in another thread.
         If `maxsize` is less than or equal to zero, the queue size is infinite.
         """
@@ -30,7 +30,7 @@ class ThreadedIterator(Iterator[T]):
         self._count = 0
         self._lock = threading.Lock()
         self.queue = Queue(maxsize)
-        self.thread = threading.Thread(target=self._worker, name=f"ThreadedIterator-{id(self):x}", daemon=True)
+        self.thread = threading.Thread(target=self._worker, name=f"ThreadedIterator-{id(self):x}", daemon=daemon)
         self.thread.start()
         self.exhausted = False
 
@@ -64,7 +64,7 @@ class ThreadedIterator(Iterator[T]):
 
         result = self.queue.get()
         if result is None:
-            self.thread.join()
+            debug_join([self.thread], extra=get_extra(self))
             self.exhausted = True
             raise StopIteration
 
@@ -124,7 +124,7 @@ class ThreadedIterator(Iterator[T]):
 
         with self.queue.not_empty:
             while self.queue._qsize() < self.queue.maxsize:
-                self.queue.not_empty.wait()
+                debug_wait([self.queue.not_empty], extra=get_extra(self))
             return
 
     @property

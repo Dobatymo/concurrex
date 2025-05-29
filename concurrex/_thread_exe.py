@@ -36,14 +36,11 @@ def _queue_reader(q: "Queue[Optional[Future[T]]]") -> Iterator[Result[T]]:
 
 @with_progress
 def map_ordered_executor(
-    func: Callable[[S], T],
-    it: Iterable[S],
-    maxsize: int,
-    num_workers: int,
+    func: Callable[[S], T], it: Iterable[S], maxsize: int, num_workers: int, daemon: Optional[bool] = None
 ) -> Iterator[Result[T]]:
     q: "Queue[Optional[Future[T]]]" = Queue(maxsize)
     with ThreadPoolExecutor(num_workers) as ex:
-        threading.Thread(target=_submit_from_queue, args=(func, it, ex, q)).start()
+        threading.Thread(target=_submit_from_queue, args=(func, it, ex, q), daemon=daemon).start()
         yield from _queue_reader(q)
 
 
@@ -116,10 +113,7 @@ def _read_waiter(futures: "Set[Future[T]]", waiter: _AsCompletedWaiter) -> Itera
 
 @with_progress
 def map_unordered_executor_in_thread(
-    func: Callable[[S], T],
-    it: Iterable[S],
-    maxsize: int,
-    num_workers: int,
+    func: Callable[[S], T], it: Iterable[S], maxsize: int, num_workers: int, daemon: Optional[bool] = None
 ) -> Iterator[Result[T]]:
     """has some race conditions and/or deadlocks"""
 
@@ -127,7 +121,7 @@ def map_unordered_executor_in_thread(
     futures: "Set[Future[T]]" = set()
     waiter = _AsCompletedWaiter()
 
-    threading.Thread(target=_iter_to_queue, args=(it, q)).start()
-    threading.Thread(target=_process_queue, args=(func, q, futures, waiter, num_workers)).start()
+    threading.Thread(target=_iter_to_queue, args=(it, q), daemon=daemon).start()
+    threading.Thread(target=_process_queue, args=(func, q, futures, waiter, num_workers), daemon=daemon).start()
 
     yield from _read_waiter(futures, waiter)

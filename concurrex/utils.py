@@ -1,3 +1,4 @@
+import logging
 import threading
 from concurrent.futures._base import FINISHED, Future
 from functools import wraps
@@ -9,7 +10,9 @@ from typing import (
     Generic,
     Iterable,
     Iterator,
+    List,
     Optional,
+    Sequence,
     Tuple,
     Type,
     TypeVar,
@@ -17,6 +20,7 @@ from typing import (
 )
 
 from genutility.callbacks import Progress as ProgressT
+from genutility.time import MeasureTime
 from typing_extensions import ParamSpec, Self
 
 if TYPE_CHECKING:
@@ -26,13 +30,140 @@ T = TypeVar("T")
 S = TypeVar("S")
 P = ParamSpec("P")
 
+logger = logging.getLogger(__name__)
+
 
 class _Unset:
     pass
 
 
+WAIT_TIMEOUT = 10.0
+
+JOIN_TIMEOUT = 10.0
+
+
 def get_extra(self: Any) -> Dict[str, str]:
     return {"object": f"{type(self).__name__}-{id(self):x}"}
+
+
+def wait_all(
+    objs: Sequence[Union[threading.Event, threading.Condition]],
+    total_timeout: Optional[float] = None,
+) -> bool:
+    if total_timeout is None:
+        for obj in objs:
+            obj.wait()
+    else:
+        with MeasureTime() as dt:
+            for obj in objs:
+                effective_timeout = max(0.0, total_timeout - dt.get())
+                if not obj.wait(effective_timeout):
+                    return False
+
+    return True
+
+
+def _debug_wait(
+    objs: Sequence[Union[threading.Event, threading.Condition]],
+    total_timeout: Optional[float] = None,
+    per_wait_timeout: float = WAIT_TIMEOUT,
+    extra: Optional[dict] = None,
+    stacklevel: int = 2,
+) -> bool:
+    """
+    Waits for a sequence of threading.Event or threading.Condition objects to be signaled.
+
+    Each object is waited on at least once. If not all objects are signaled after a pass,
+    the function checks whether the total timeout has been exceeded and exits early if so.
+    Warnings are logged for each object that is not yet signaled, and when the total timeout
+    is exceeded.
+
+    Note: Conditions must be waited on with their lock held. This function does not enforce
+    proper Condition usage but will emit a warning if used without acquiring the lock.
+
+    Parameters:
+        objs: A sequence of Event or Condition objects to wait on.
+        total_timeout: Optional maximum total time in seconds to wait for all objects.
+        per_wait_timeout: Maximum time in seconds to wait per object per loop iteration.
+        extra: Optional dict passed to the logger for additional context.
+        stacklevel: passed to the logger
+
+    Returns:
+        True if all objects were signaled within the total timeout, False otherwise.
+    """
+
+    remaining_objs = list(objs)
+    with MeasureTime() as dt:
+        for obj in remaining_objs:
+            if isinstance(obj, threading.Condition):
+                try:
+                    if not obj._is_owned():
+                        logger.warning("Waiting on %s without owning the lock", obj, extra=extra, stacklevel=stacklevel)
+                except AttributeError:
+                    pass  # _is_owned may not be available in all Python versions
+
+        while remaining_objs:
+            objs_waiting: List[Union[threading.Event, threading.Condition]] = []
+            for obj in remaining_objs:
+                if total_timeout is not None:
+                    effective_timeout = min(per_wait_timeout, max(0.0, total_timeout - dt.get()))
+                else:
+                    effective_timeout = per_wait_timeout
+
+                if not obj.wait(effective_timeout):
+                    logger.warning(
+                        "%s not signaled after %.02f seconds", obj, dt.get(), extra=extra, stacklevel=stacklevel
+                    )
+                    objs_waiting.append(obj)
+
+            remaining_objs = objs_waiting
+
+            if remaining_objs and total_timeout is not None and dt.get() >= total_timeout:
+                logger.warning(
+                    "Total timeout of %.02f seconds exceeded before all objects were signaled",
+                    total_timeout,
+                    extra=extra,
+                    stacklevel=stacklevel,
+                )
+                return False
+
+        return True
+
+
+def debug_wait(
+    objs: Sequence[Union[threading.Event, threading.Condition]],
+    total_timeout: Optional[float] = None,
+    per_wait_timeout: float = WAIT_TIMEOUT,
+    extra: Optional[dict] = None,
+) -> bool:
+    if __debug__:
+        return _debug_wait(objs, total_timeout, per_wait_timeout, extra, stacklevel=3)
+    else:
+        return wait_all(objs, total_timeout)
+
+
+def debug_join(
+    threads: Sequence[threading.Thread],
+    extra: Optional[dict] = None,
+    timeout: float = JOIN_TIMEOUT,
+    stacklevel: int = 2,
+) -> None:
+    with MeasureTime() as dt:
+        while threads:
+            threads_alive: List[threading.Thread] = []
+            for thread in threads:
+                thread.join(timeout)
+
+                if thread.is_alive():
+                    logger.warning(
+                        "Thread %s still alive after waiting for %.02f seconds",
+                        thread.name,
+                        dt.get(),
+                        extra=extra,
+                        stacklevel=stacklevel,
+                    )
+                    threads_alive.append(thread)
+            threads = threads_alive
 
 
 class Result(Generic[T]):

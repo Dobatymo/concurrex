@@ -7,7 +7,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Type, Typ
 from genutility.callbacks import Progress as ProgressT
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
-from .utils import Result
+from .utils import Result, debug_join
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def map_unordered_semaphore(
     maxsize: int,
     num_workers: int,
     progress: ProgressT,
+    daemon: Optional[bool] = None,
 ) -> Iterator[Result[T]]:
     assert maxsize >= num_workers
 
@@ -96,11 +97,12 @@ def map_unordered_semaphore(
         target=_read_queue_update_total_semaphore,
         name="task-reader",
         args=(it, in_q, semaphore, update, num_workers, progress),
+        daemon=daemon,
     )
     t_read.start()
     threads.append(t_read)
     for _ in range(num_workers):
-        t = MyThread(target=_map_queue, args=(func, in_q, out_q))
+        t = MyThread(target=_map_queue, args=(func, in_q, out_q), daemon=daemon)
         t.start()
         threads.append(t)
 
@@ -120,7 +122,7 @@ def map_unordered_semaphore(
                 raise RuntimeError("deadlock")
 
             for thread in threads:
-                thread.join()
+                debug_join([thread], extra={"object": object_id})
             any_terminated = False
             for thread in threads:
                 any_terminated = any_terminated or thread.terminate(1)
@@ -175,13 +177,16 @@ def map_unordered_boundedqueue(
     maxsize: int,
     num_workers: int,
     progress: ProgressT,
+    daemon: Optional[bool] = None,
 ) -> Iterator[Result[T]]:
     in_q: "Queue[Union[Type[_Done], S]]" = Queue(maxsize)
     out_q: "Queue[Optional[Result[T]]]" = Queue(maxsize)
     update = {"total": 0}
 
-    threading.Thread(target=_read_queue_update_total, args=(it, in_q, update, num_workers, progress)).start()
+    threading.Thread(
+        target=_read_queue_update_total, args=(it, in_q, update, num_workers, progress), daemon=daemon
+    ).start()
     for _ in range(num_workers):
-        threading.Thread(target=_map_queue, args=(func, in_q, out_q)).start()
+        threading.Thread(target=_map_queue, args=(func, in_q, out_q), daemon=daemon).start()
 
     yield from _read_out_queue(out_q, update, num_workers, progress)

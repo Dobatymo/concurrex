@@ -8,3 +8,4 @@ dist/
 .hypothesis/
 .mypy_cache/
 .coverage/
+.pytest_cache/

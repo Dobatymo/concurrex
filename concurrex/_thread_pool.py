@@ -5,11 +5,10 @@ from queue import Empty, Queue, SimpleQueue
 from typing import Callable, Generic, Iterable, Iterator, List, NamedTuple, Optional, Tuple, Type, TypeVar, Union
 
 from genutility.callbacks import Progress as ProgressT
-from genutility.time import MeasureTime
 from typing_extensions import Self, TypeAlias
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
-from .utils import Result, get_extra
+from .utils import Result, debug_join, debug_wait, get_extra
 
 try:
     from atomicarray import ArrayInt32 as NumArray
@@ -132,9 +131,13 @@ class Executor(Generic[T]):
 class ThreadPool(Generic[T]):
     num_workers: int
 
-    def __init__(self, num_workers: Optional[int] = None, progress: Optional[ProgressT] = None) -> None:
+    def __init__(
+        self, num_workers: Optional[int] = None, progress: Optional[ProgressT] = None, daemon: Optional[bool] = None
+    ) -> None:
         self.num_workers = num_workers or os.cpu_count() or 1
         self.progress = progress or ProgressT()
+        self.daemon = daemon
+
         self._counts = NumArray(0, 0, 0)
 
         self.total = 0
@@ -147,6 +150,7 @@ class ThreadPool(Generic[T]):
                 target=self._map_queue,
                 name=f"ThreadPool-{id(self):x}-map_queue-{i}",
                 args=(self.in_q, self.out_q, event_a, event_b),
+                daemon=self.daemon,
             )
             for i, (event_a, event_b) in enumerate(zip(self.events_a, self.events_b))
         ]
@@ -154,22 +158,10 @@ class ThreadPool(Generic[T]):
         for t in self.threads:
             t.start()
 
-    def _slow_wait(self, events: List[threading.Event], timeout: float = JOIN_TIMEOUT) -> None:
-        with MeasureTime() as dt:
-            while events:
-                events_alive: List[threading.Event] = []
-                for event in events:
-                    if not event.wait(timeout):
-                        logger.warning(
-                            "Event %s not signaled after %.02f seconds", event, dt.get(), extra=get_extra(self)
-                        )
-                        events_alive.append(event)
-                events = events_alive
-
     def _wait_threads_idle_or_dead(self) -> None:
         """Wait until threadpool is either idle or all threads are terminated."""
 
-        self._slow_wait(self.events_b)
+        debug_wait(self.events_b, extra=get_extra(self))
 
     def _signal_threads(self) -> List[MyThread]:
         """Returns threads which where already signaled before"""
@@ -192,7 +184,8 @@ class ThreadPool(Generic[T]):
             event_b.set()
             counts_before = NumArray(-1, 1, 0)
             counts_after = NumArray(0, -1, 1)
-            while event_a.wait():
+            while True:
+                debug_wait([event_a], extra=get_extra(self))
                 event_b.clear()
                 while True:
                     item = in_q.get()
@@ -290,24 +283,6 @@ class ThreadPool(Generic[T]):
 
         return Executor(self, bufsize)
 
-    def _slow_join(self, threads: List[MyThread], timeout: float = JOIN_TIMEOUT) -> None:
-        with MeasureTime() as dt:
-            while threads:
-                threads_alive = []
-                for thread in threads:
-                    # wait for worker threads to terminate
-                    thread.join(timeout)
-
-                    if thread.is_alive():
-                        logger.warning(
-                            "Thread %s still alive after waiting for %.02f seconds",
-                            thread.name,
-                            dt.get(),
-                            extra=get_extra(self),
-                        )
-                        threads_alive.append(thread)
-                threads = threads_alive
-
     def _run_iter(
         self,
         it: Iterable[Tuple[Callable[[S], T], tuple, dict]],
@@ -319,6 +294,7 @@ class ThreadPool(Generic[T]):
             target=self._read_it,
             name=f"ThreadPool-{id(self):x}-read_it",
             args=(it, total, semaphore),
+            daemon=self.daemon,
         )
         t_read.start()
 
@@ -341,7 +317,7 @@ class ThreadPool(Generic[T]):
                 # fixme: we should probably try to stop t_read here as well
                 raise
 
-        self._slow_join([t_read])
+        debug_join([t_read], extra=get_extra(self))
 
     def __enter__(self) -> Self:
         return self
@@ -366,7 +342,7 @@ class ThreadPool(Generic[T]):
         if active_threads:
             raise RuntimeError(f"{active_threads} threads already active")
 
-        self._slow_join(self.threads)
+        debug_join(self.threads, extra=get_extra(self))
 
     def map_unordered(self, func: Callable[[S], T], it: Iterable[S], bufsize: int = 0) -> Iterator[Result[T]]:
         _it = ((func, (i,), {}) for i in it)
@@ -392,5 +368,6 @@ def map_unordered_concurrex(
     num_workers: int,
     progress: ProgressT,
 ) -> Iterator[Result[T]]:
-    with ThreadPool(num_workers, progress) as tp:
+    tp_cm: ThreadPool[T] = ThreadPool(num_workers, progress)
+    with tp_cm as tp:
         yield from tp.map_unordered(func, it, maxsize)
