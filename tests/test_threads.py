@@ -323,6 +323,11 @@ class ThreadTest(MyTestCase):
         )
         self.assertLessEqual(delta, 1.0)
 
+    def test_tp_nop(self):
+        num_workers = 4
+        with ThreadPool(num_workers, self.progress):
+            pass
+
     @parametrize(
         ([],),
         (range(1),),
@@ -331,7 +336,7 @@ class ThreadTest(MyTestCase):
         (range(1000),),
         (range(10000),),
     )
-    def test_tp_executor_simple(self, seq):
+    def test_tp_executor_simple_no_done(self, seq):
         bufsize = 0  # must be zero otherwise it will deadlock
         num_workers = 4
         truth = list(seq)

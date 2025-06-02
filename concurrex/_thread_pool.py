@@ -81,6 +81,7 @@ class Executor(Generic[T]):
                     item = out_q.get()
                     if item is None:
                         num_workers -= 1
+                        logger.debug("Queue empty. %d workers remaining.", num_workers, extra=get_extra(self))
                         if num_workers == 0:
                             break
                         continue
@@ -109,6 +110,7 @@ class Executor(Generic[T]):
                 item = out_q.get()
                 if item is None:
                     num_workers -= 1
+                    logger.debug("Queue empty. %d workers remaining.", num_workers, extra=get_extra(self))
                     if num_workers == 0:
                         raise NoOutstandingResults()
                 else:
@@ -316,8 +318,8 @@ class ThreadPool(Generic[T]):
                 logger.error("Caught %s, trying to clean up", type(e).__name__, extra=get_extra(self))
                 # fixme: we should probably try to stop t_read here as well
                 raise
-
-        debug_join([t_read], extra=get_extra(self))
+            finally:
+                debug_join([t_read], extra=get_extra(self))
 
     def __enter__(self) -> Self:
         return self

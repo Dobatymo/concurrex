@@ -24,6 +24,8 @@ from genutility.time import MeasureTime
 from typing_extensions import ParamSpec, Self
 
 if TYPE_CHECKING:
+    from multiprocessing import Process
+
     import numpy as np
 
 T = TypeVar("T")
@@ -142,28 +144,90 @@ def debug_wait(
         return wait_all(objs, total_timeout)
 
 
-def debug_join(
-    threads: Sequence[threading.Thread],
-    extra: Optional[dict] = None,
-    timeout: float = JOIN_TIMEOUT,
-    stacklevel: int = 2,
-) -> None:
-    with MeasureTime() as dt:
-        while threads:
-            threads_alive: List[threading.Thread] = []
-            for thread in threads:
-                thread.join(timeout)
+def join_all(
+    objs: Sequence[Union[threading.Thread, "Process"]],
+    total_timeout: Optional[float] = None,
+) -> bool:
+    if total_timeout is None:
+        for obj in objs:
+            obj.join()
+    else:
+        with MeasureTime() as dt:
+            for obj in objs:
+                effective_timeout = max(0.0, total_timeout - dt.get())
+                obj.join(effective_timeout)
+                if obj.is_alive():
+                    return False
 
-                if thread.is_alive():
+    return True
+
+
+def _debug_join(
+    objs: Sequence[Union[threading.Thread, "Process"]],
+    total_timeout: Optional[float] = None,
+    per_wait_timeout: float = WAIT_TIMEOUT,
+    extra: Optional[dict] = None,
+    stacklevel: int = 2,
+) -> bool:
+    """
+    Waits for a sequence of hreading.Thread objects to be joined.
+
+    Parameters:
+        objs: A sequence of thread objects to join.
+        total_timeout: Optional maximum total time in seconds to wait for all objects.
+        per_wait_timeout: Maximum time in seconds to wait per object per loop iteration.
+        extra: Optional dict passed to the logger for additional context.
+        stacklevel: passed to the logger
+
+    Returns:
+        bool: True if all threads joined successfully within the total timeout, False otherwise.
+    """
+
+    remaining_objs = list(objs)
+    with MeasureTime() as dt:
+        while remaining_objs:
+            objs_waiting: List[Union[threading.Thread, "Process"]] = []
+            for obj in remaining_objs:
+                if total_timeout is not None:
+                    effective_timeout = min(per_wait_timeout, max(0.0, total_timeout - dt.get()))
+                else:
+                    effective_timeout = per_wait_timeout
+
+                obj.join(effective_timeout)
+                if obj.is_alive():
                     logger.warning(
                         "Thread %s still alive after waiting for %.02f seconds",
-                        thread.name,
+                        obj.name,
                         dt.get(),
                         extra=extra,
                         stacklevel=stacklevel,
                     )
-                    threads_alive.append(thread)
-            threads = threads_alive
+                    objs_waiting.append(obj)
+
+            remaining_objs = objs_waiting
+
+            if remaining_objs and total_timeout is not None and dt.get() >= total_timeout:
+                logger.warning(
+                    "Total timeout of %.02f seconds exceeded before all objects were joined",
+                    total_timeout,
+                    extra=extra,
+                    stacklevel=stacklevel,
+                )
+                return False
+
+        return True
+
+
+def debug_join(
+    objs: Sequence[Union[threading.Thread, "Process"]],
+    total_timeout: Optional[float] = None,
+    per_wait_timeout: float = WAIT_TIMEOUT,
+    extra: Optional[dict] = None,
+) -> bool:
+    if __debug__:
+        return _debug_join(objs, total_timeout, per_wait_timeout, extra, stacklevel=3)
+    else:
+        return join_all(objs, total_timeout)
 
 
 class Result(Generic[T]):
