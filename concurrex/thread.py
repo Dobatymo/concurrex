@@ -7,7 +7,7 @@ from typing_extensions import ParamSpec, Self
 
 from ._thread import map_unordered_semaphore as map_unordered  # noqa: F401
 from ._thread_pool import ThreadPool  # noqa: F401
-from .utils import Result, debug_join, debug_wait, get_extra
+from .utils import TOTAL_TIMEOUT, Result, debug_join, debug_wait, get_extra
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -64,7 +64,8 @@ class ThreadedIterator(Iterator[T]):
 
         result = self.queue.get()
         if result is None:
-            debug_join([self.thread], extra=get_extra(self))
+            debug_join([self.thread], TOTAL_TIMEOUT, extra=get_extra(self))
+
             self.exhausted = True
             raise StopIteration
 

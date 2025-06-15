@@ -14,7 +14,7 @@ from genutility.test import MyTestCase, parametrize, parametrize_product, parame
 from genutility.time import MeasureTime
 from typing_extensions import Self
 
-from concurrex._thread import Result, map_unordered_semaphore
+from concurrex._thread import Result, map_unordered_boundedqueue, map_unordered_semaphore
 from concurrex._thread_pool import ThreadPool, map_unordered_concurrex
 from concurrex.thread import ThreadedIterator
 
@@ -48,7 +48,7 @@ class CheckMemory(Generic[T]):
             yield item
 
     def collect(self, it: Iterable[Result[T]], *, seconds: float) -> List[T]:
-        out = []
+        out: List[T] = []
         for result in it:
             item = result.get()
             self.items.remove(item)
@@ -202,9 +202,13 @@ class ThreadTest(MyTestCase):
 
     @parametrize_product(
         [[], range(1), range(10), range(100), range(1000), range(10000)],
-        [map_unordered_semaphore, map_unordered_concurrex],
+        [
+            map_unordered_semaphore,
+            map_unordered_concurrex,
+            map_unordered_boundedqueue,
+        ],
     )
-    def test_lists(self, seq, func):
+    def test_map_unordered_lists(self, seq, func):
         bufsize = 10
         num_workers = 4
         truth = list(seq)
@@ -213,20 +217,56 @@ class ThreadTest(MyTestCase):
 
     @parametrize_product(
         [[], range(1), range(10), range(100), range(1000), range(10000)],
-        [map_unordered_semaphore, map_unordered_concurrex],
     )
-    def test_range(self, it, func):
+    def test_threadpool_lists(self, seq):
+        bufsize = 10
+        num_workers = 4
+        truth = list(seq)
+        with ThreadPool(num_workers, self.progress) as tp:
+            result = [result.get() for result in tp.map_unordered(identity, truth, bufsize)]
+            self.assertUnorderedSeqEqual(truth, result)
+
+            result = [result.get() for result in tp.map_unordered(identity, truth, bufsize)]
+            self.assertUnorderedSeqEqual(truth, result)
+
+    @parametrize_product(
+        [[], range(1), range(10), range(100), range(1000), range(10000)],
+        [
+            map_unordered_semaphore,
+            map_unordered_concurrex,
+            map_unordered_boundedqueue,
+        ],
+    )
+    def test_map_unordered_range(self, it, func):
         bufsize = 10
         num_workers = 4
         truth = list(it)
         result = [result.get() for result in func(identity, it, bufsize, num_workers, self.progress)]
         self.assertUnorderedSeqEqual(truth, result)
 
+    @parametrize_product(
+        [[], range(1), range(10), range(100), range(1000), range(10000)],
+    )
+    def test_threadpool_range(self, it):
+        bufsize = 10
+        num_workers = 4
+        truth = list(it)
+        with ThreadPool(num_workers, self.progress) as tp:
+            result = [result.get() for result in tp.map_unordered(identity, it, bufsize)]
+            self.assertUnorderedSeqEqual(truth, result)
+
+            result = [result.get() for result in tp.map_unordered(identity, it, bufsize)]
+            self.assertUnorderedSeqEqual(truth, result)
+
     @parametrize_starproduct(
         [[0, 0.1, 10], [0.1, 0, 0], [0, 0, 0], [0.1, 0.1, 0]],
-        [[map_unordered_semaphore], [map_unordered_concurrex]],
+        [
+            [map_unordered_semaphore, 10 + 1],
+            [map_unordered_concurrex, 10 + 1],
+            [map_unordered_boundedqueue, 2 * 10 + 4 + 1],
+        ],
     )
-    def test_provide_collect(self, provide_wait, collect_wait, min_size, func):
+    def test_provide_collect(self, provide_wait, collect_wait, min_size, func, max_processed_simultaneously_truth):
         memory = CheckMemory()
         it = memory.provide(range(30), seconds=provide_wait)
         bufsize = 10
@@ -243,7 +283,7 @@ class ThreadTest(MyTestCase):
         if thread.results:
             max_items_processed_simultaneously = max(thread.results)
             self.assertLessEqual(
-                max_items_processed_simultaneously, bufsize + 1
+                max_items_processed_simultaneously, max_processed_simultaneously_truth
             )  # plus 1 to allow for unimportant races
             # self.assertGreaterEqual(max_items_processed_simultaneously, min_size)  # doesn't have to be true although it should
         else:
@@ -251,7 +291,11 @@ class ThreadTest(MyTestCase):
 
     @parametrize_starproduct(
         [(1, 100), (10, 100), (20, 100), (100, 100)],
-        [[map_unordered_semaphore], [map_unordered_concurrex]],
+        [
+            [map_unordered_semaphore],
+            [map_unordered_concurrex],
+            [map_unordered_boundedqueue],
+        ],
         [[identity], [identity_random_sleep]],
     )
     def test_limited(self, limit, total, func, mapfunc):
@@ -323,7 +367,7 @@ class ThreadTest(MyTestCase):
         )
         self.assertLessEqual(delta, 1.0)
 
-    def test_tp_nop(self):
+    def test_threadpool_nop(self):
         num_workers = 4
         with ThreadPool(num_workers, self.progress):
             pass
@@ -371,6 +415,34 @@ class ThreadTest(MyTestCase):
             for r in executor.iter_unordered(wait_done=True):
                 item = r.get()
                 result.append(item)
+        self.assertUnorderedSeqEqual(truth, result)
+
+    @parametrize(
+        ([],),
+        (range(1),),
+        (range(10),),
+        (range(100),),
+        (range(1000),),
+        (range(10000),),
+    )
+    def test_tp_executor_thread_done(self, seq):
+        def insert(executor, truth):
+            for item in truth:
+                executor.execute(identity, item)
+            executor.done()
+
+        bufsize = 10
+        num_workers = 4
+        truth = list(seq)
+        with ThreadPool(num_workers, self.progress) as tp:
+            executor = tp.executor(bufsize)
+            t = threading.Thread(target=insert, args=(executor, truth))
+            t.start()
+            result = []
+            for r in executor.iter_unordered(wait_done=True):
+                item = r.get()
+                result.append(item)
+        t.join()
         self.assertUnorderedSeqEqual(truth, result)
 
     @parametrize(

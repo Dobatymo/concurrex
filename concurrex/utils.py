@@ -2,6 +2,7 @@ import logging
 import threading
 from concurrent.futures._base import FINISHED, Future
 from functools import wraps
+from random import getrandbits
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -40,8 +41,13 @@ class _Unset:
 
 
 WAIT_TIMEOUT = 10.0
-
 JOIN_TIMEOUT = 10.0
+
+
+if __debug__:
+    TOTAL_TIMEOUT: Optional[float] = 60
+else:
+    TOTAL_TIMEOUT = None
 
 
 def get_extra(self: Any) -> Dict[str, str]:
@@ -65,7 +71,7 @@ def wait_all(
     return True
 
 
-def _debug_wait(
+def wait_all_incremental(
     objs: Sequence[Union[threading.Event, threading.Condition]],
     total_timeout: Optional[float] = None,
     per_wait_timeout: float = WAIT_TIMEOUT,
@@ -99,7 +105,7 @@ def _debug_wait(
         for obj in remaining_objs:
             if isinstance(obj, threading.Condition):
                 try:
-                    if not obj._is_owned():
+                    if not obj._is_owned():  # type: ignore[attr-defined]
                         logger.warning("Waiting on %s without owning the lock", obj, extra=extra, stacklevel=stacklevel)
                 except AttributeError:
                     pass  # _is_owned may not be available in all Python versions
@@ -113,7 +119,7 @@ def _debug_wait(
                     effective_timeout = per_wait_timeout
 
                 if not obj.wait(effective_timeout):
-                    logger.warning(
+                    logger.debug(
                         "%s not signaled after %.02f seconds", obj, dt.get(), extra=extra, stacklevel=stacklevel
                     )
                     objs_waiting.append(obj)
@@ -139,7 +145,13 @@ def debug_wait(
     extra: Optional[dict] = None,
 ) -> bool:
     if __debug__:
-        return _debug_wait(objs, total_timeout, per_wait_timeout, extra, stacklevel=3)
+        import faulthandler
+
+        signaled = wait_all_incremental(objs, total_timeout, per_wait_timeout, extra, stacklevel=3)
+        if not signaled:
+            faulthandler.dump_traceback(all_threads=True)
+            raise RuntimeError(f"Events not signaled after {total_timeout} seconds")
+        return signaled
     else:
         return wait_all(objs, total_timeout)
 
@@ -162,10 +174,10 @@ def join_all(
     return True
 
 
-def _debug_join(
+def join_all_incremental(
     objs: Sequence[Union[threading.Thread, "Process"]],
     total_timeout: Optional[float] = None,
-    per_wait_timeout: float = WAIT_TIMEOUT,
+    per_wait_timeout: float = JOIN_TIMEOUT,
     extra: Optional[dict] = None,
     stacklevel: int = 2,
 ) -> bool:
@@ -195,7 +207,7 @@ def _debug_join(
 
                 obj.join(effective_timeout)
                 if obj.is_alive():
-                    logger.warning(
+                    logger.debug(
                         "Thread %s still alive after waiting for %.02f seconds",
                         obj.name,
                         dt.get(),
@@ -221,11 +233,18 @@ def _debug_join(
 def debug_join(
     objs: Sequence[Union[threading.Thread, "Process"]],
     total_timeout: Optional[float] = None,
-    per_wait_timeout: float = WAIT_TIMEOUT,
+    per_wait_timeout: float = JOIN_TIMEOUT,
     extra: Optional[dict] = None,
 ) -> bool:
     if __debug__:
-        return _debug_join(objs, total_timeout, per_wait_timeout, extra, stacklevel=3)
+        import faulthandler
+
+        joined = join_all_incremental(objs, total_timeout, per_wait_timeout, extra, stacklevel=3)
+        if not joined:
+            threads = ", ".join(thread.name for thread in objs)
+            faulthandler.dump_traceback(all_threads=True)
+            raise RuntimeError(f"Could not join {threads} within {total_timeout} seconds")
+        return joined
     else:
         return join_all(objs, total_timeout)
 
@@ -390,3 +409,11 @@ def with_progress(
         yield from progress.track(it_out, description="processed")
 
     return inner
+
+
+def get_object_id(logger: logging.Logger, name: str) -> Optional[str]:
+    if logger.isEnabledFor(logging.DEBUG):
+        object_id = f"{name}-{getrandbits(64):x}"
+    else:
+        object_id = None
+    return object_id

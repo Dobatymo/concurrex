@@ -33,9 +33,6 @@ dependencies = [
 optional-dependencies.fast = [
   "atomicarray>=0.0.1",
 ]
-optional-dependencies.test = [
-  "genutility[test]>=0.0.103",
-]
 urls.Home = "https://github.com/Dobatymo/concurrex"
 
 [tool.black]
@@ -74,4 +71,11 @@ strict_equality = true
 [tool.bandit]
 skips = [
   "B101",
+]
+
+[dependency-groups]
+dev = [
+  "genutility[test]>=0.0.103",
+  "pytest>=8.3.5",
+  "pytest-subtests>=0.13.1",
 ]

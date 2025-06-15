@@ -8,7 +8,7 @@ from genutility.callbacks import Progress as ProgressT
 from typing_extensions import Self, TypeAlias
 
 from .thread_utils import MyThread, SemaphoreT, ThreadingExceptHook, _Done, make_semaphore, threading_excepthook
-from .utils import Result, debug_join, debug_wait, get_extra
+from .utils import TOTAL_TIMEOUT, Result, debug_join, debug_wait, get_extra
 
 try:
     from atomicarray import ArrayInt32 as NumArray
@@ -16,8 +16,6 @@ except ImportError:
     from .utils import NumArrayPython as NumArray
 
 logger = logging.getLogger(__name__)
-
-JOIN_TIMEOUT = 10
 
 S = TypeVar("S")
 T = TypeVar("T")
@@ -90,7 +88,8 @@ class Executor(Generic[T]):
                 else:
                     try:
                         semaphore.release()
-                    except ValueError:
+                    except ValueError as e:
+                        logger.debug("Releasing %s failed: %s", semaphore, e, extra=get_extra(self))
                         break
                     item = out_q.get()
                     assert item is not None
@@ -163,7 +162,7 @@ class ThreadPool(Generic[T]):
     def _wait_threads_idle_or_dead(self) -> None:
         """Wait until threadpool is either idle or all threads are terminated."""
 
-        debug_wait(self.events_b, extra=get_extra(self))
+        debug_wait(self.events_b, TOTAL_TIMEOUT, extra=get_extra(self))
 
     def _signal_threads(self) -> List[MyThread]:
         """Returns threads which where already signaled before"""
@@ -187,11 +186,10 @@ class ThreadPool(Generic[T]):
             counts_before = NumArray(-1, 1, 0)
             counts_after = NumArray(0, -1, 1)
             while True:
-                debug_wait([event_a], extra=get_extra(self))
+                debug_wait([event_a], TOTAL_TIMEOUT, extra=get_extra(self))
                 event_b.clear()
                 while True:
                     item = in_q.get()
-
                     if item is _Done:
                         out_q.put(None)
                         event_a.clear()
@@ -291,6 +289,8 @@ class ThreadPool(Generic[T]):
         total: Optional[int],
         bufsize: int = 0,
     ) -> Iterator[Result[T]]:
+        """running in main thread"""
+
         semaphore = make_semaphore(bufsize)
         t_read = MyThread(
             target=self._read_it,
@@ -319,7 +319,7 @@ class ThreadPool(Generic[T]):
                 # fixme: we should probably try to stop t_read here as well
                 raise
             finally:
-                debug_join([t_read], extra=get_extra(self))
+                debug_join([t_read], TOTAL_TIMEOUT, extra=get_extra(self))
 
     def __enter__(self) -> Self:
         return self
@@ -331,7 +331,9 @@ class ThreadPool(Generic[T]):
         self.close()
 
     def close(self) -> None:
-        logger.debug("Closing", extra=get_extra(self))
+        logger.debug(
+            "Closing. in-queue-size=%d, out-queue-size=%d", self.in_q.qsize(), self.out_q.qsize(), extra=get_extra(self)
+        )
         for _ in range(self.num_workers):
             # message worker threads to stop
             self.in_q.put(_Stop)
@@ -342,9 +344,10 @@ class ThreadPool(Generic[T]):
         # signaling an already active thread might lead to a deadlock, so waiting first is important
         active_threads = self._signal_threads()
         if active_threads:
-            raise RuntimeError(f"{active_threads} threads already active")
+            logger.warning("%d threads already active", len(active_threads), extra=get_extra(self))
+            # raise RuntimeError(f"{active_threads} threads already active")
 
-        debug_join(self.threads, extra=get_extra(self))
+        debug_join(self.threads, TOTAL_TIMEOUT, extra=get_extra(self))
 
     def map_unordered(self, func: Callable[[S], T], it: Iterable[S], bufsize: int = 0) -> Iterator[Result[T]]:
         _it = ((func, (i,), {}) for i in it)

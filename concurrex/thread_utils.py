@@ -104,7 +104,7 @@ class DummySemaphore:
         self._lock = threading.Lock()
         self._value = 0
 
-    def acquire(self, blocking=True, timeout=None) -> None:
+    def acquire(self, blocking: bool = True, timeout=None) -> None:
         with self._lock:
             self._value += 1
 
