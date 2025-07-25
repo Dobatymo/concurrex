@@ -34,10 +34,11 @@ def _read_out_queue_semaphore(
     num_workers: int,
     progress: ProgressT,
     description: str = "processed",
+    transient: bool = False,
 ) -> Iterator[Result[T]]:
     object_id = get_object_id(logger, "_read_out_queue_semaphore")
 
-    with progress.task(total=update["total"], description=description) as task:
+    with progress.task(total=update["total"], description=description, transient=transient) as task:
         completed = 0
         task.update(completed=completed, **update)
         while True:
@@ -73,11 +74,12 @@ def _read_queue_update_total_semaphore(
     num_workers: int,
     progress: ProgressT,
     description: str = "reading",
+    transient: bool = False,
 ) -> None:
     object_id = get_object_id(logger, "_read_queue_update_total_semaphore")
 
     try:
-        for item in progress.track(it, description=description):
+        for item in progress.track(it, description=description, transient=transient):
             semaphore.acquire()  # notifying it allows waiting exceptions to interrupt it
             update["total"] += 1
             in_q.put(item)
@@ -168,10 +170,11 @@ def _read_out_queue(
     num_workers: int,
     progress: ProgressT,
     description: str = "processed",
+    transient: bool = False,
 ) -> Iterator[Result[T]]:
     object_id = get_object_id(logger, "_read_out_queue")
 
-    with progress.task(total=update["total"], description=description) as task:
+    with progress.task(total=update["total"], description=description, transient=transient) as task:
         completed = 0
         task.update(completed=completed, **update)
         while True:
@@ -194,8 +197,9 @@ def _read_queue_update_total(
     num_workers: int,
     progress: ProgressT,
     description: str = "reading",
+    transient: bool = False,
 ) -> None:
-    for item in progress.track(it, description=description):
+    for item in progress.track(it, description=description, transient=transient):
         update["total"] += 1
         in_q.put(item)
     for _ in range(num_workers):

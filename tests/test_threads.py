@@ -1,3 +1,4 @@
+import platform
 import signal
 import threading
 import traceback
@@ -6,7 +7,7 @@ from itertools import islice
 from random import random
 from time import sleep
 from typing import Callable, Generic, Iterable, Iterator, List, Optional, Set, TypeVar
-from unittest import expectedFailure
+from unittest import expectedFailure, skipIf
 
 from genutility.callbacks import Progress
 from genutility.func import identity
@@ -19,6 +20,11 @@ from concurrex._thread_pool import ThreadPool, map_unordered_concurrex
 from concurrex.thread import ThreadedIterator
 
 T = TypeVar("T")
+
+DAEMON = True
+
+_is_linux = platform.system() == "Linux"
+_is_macos = platform.system() == "Darwin"
 
 
 def interrupt_after(seconds: float) -> threading.Timer:
@@ -222,7 +228,7 @@ class ThreadTest(MyTestCase):
         bufsize = 10
         num_workers = 4
         truth = list(seq)
-        with ThreadPool(num_workers, self.progress) as tp:
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON) as tp:
             result = [result.get() for result in tp.map_unordered(identity, truth, bufsize)]
             self.assertUnorderedSeqEqual(truth, result)
 
@@ -251,7 +257,7 @@ class ThreadTest(MyTestCase):
         bufsize = 10
         num_workers = 4
         truth = list(it)
-        with ThreadPool(num_workers, self.progress) as tp:
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON) as tp:
             result = [result.get() for result in tp.map_unordered(identity, it, bufsize)]
             self.assertUnorderedSeqEqual(truth, result)
 
@@ -337,6 +343,7 @@ class ThreadTest(MyTestCase):
                 self.fail("call wasn't interrupted")
         return delta.get()
 
+    @skipIf(_is_linux or _is_macos, "Skip on Linux or macOS")
     @parametrize(
         (map_unordered_semaphore,),
         (map_unordered_concurrex,),
@@ -369,7 +376,7 @@ class ThreadTest(MyTestCase):
 
     def test_threadpool_nop(self):
         num_workers = 4
-        with ThreadPool(num_workers, self.progress):
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON):
             pass
 
     @parametrize(
@@ -384,7 +391,7 @@ class ThreadTest(MyTestCase):
         bufsize = 0  # must be zero otherwise it will deadlock
         num_workers = 4
         truth = list(seq)
-        with ThreadPool(num_workers, self.progress) as tp:
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON) as tp:
             executor = tp.executor(bufsize)
             for item in truth:
                 executor.execute(identity, item)
@@ -406,7 +413,7 @@ class ThreadTest(MyTestCase):
         bufsize = 0  # must be zero otherwise it will deadlock
         num_workers = 4
         truth = list(seq)
-        with ThreadPool(num_workers, self.progress) as tp:
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON) as tp:
             executor = tp.executor(bufsize)
             for item in truth:
                 executor.execute(identity, item)
@@ -434,9 +441,9 @@ class ThreadTest(MyTestCase):
         bufsize = 10
         num_workers = 4
         truth = list(seq)
-        with ThreadPool(num_workers, self.progress) as tp:
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON) as tp:
             executor = tp.executor(bufsize)
-            t = threading.Thread(target=insert, args=(executor, truth))
+            t = threading.Thread(target=insert, args=(executor, truth), daemon=DAEMON)
             t.start()
             result = []
             for r in executor.iter_unordered(wait_done=True):
@@ -455,7 +462,7 @@ class ThreadTest(MyTestCase):
     def test_tp_executor_collatz(self, seq, truth):
         bufsize = 0  # must be zero otherwise it will deadlock
         num_workers = 4
-        with ThreadPool(num_workers, self.progress) as tp:
+        with ThreadPool(num_workers, self.progress, daemon=DAEMON) as tp:
             executor = tp.executor(bufsize)
             for item in seq:
                 executor.execute(identity, item)

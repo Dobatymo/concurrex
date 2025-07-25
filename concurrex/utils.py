@@ -403,10 +403,11 @@ def with_progress(
         maxsize: int,
         num_workers: int,
         progress: ProgressT,
+        transient: bool = False,
     ) -> Iterator:
-        it_in = progress.track(it, description="reading")
+        it_in = progress.track(it, description="reading", transient=transient)
         it_out = _func(func, it_in, maxsize, num_workers)
-        yield from progress.track(it_out, description="processed")
+        yield from progress.track(it_out, description="processed", transient=transient)
 
     return inner
 

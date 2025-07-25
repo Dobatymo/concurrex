@@ -63,14 +63,16 @@ class Executor(Generic[T]):
         for _ in range(self.threadpool.num_workers):
             self.threadpool.in_q.put(_Done)
 
-    def iter_unordered(self, wait_done: bool = False, description: str = "reading") -> Iterator[Result[T]]:
+    def iter_unordered(
+        self, wait_done: bool = False, description: str = "reading", transient: bool = False
+    ) -> Iterator[Result[T]]:
         threadpool = self.threadpool
         semaphore = self.semaphore
 
         out_q = threadpool.out_q
         num_workers = threadpool.num_workers  # copy
 
-        with threadpool.progress.task(total=threadpool.total, description=description) as task:
+        with threadpool.progress.task(total=threadpool.total, description=description, transient=transient) as task:
             completed = 0
             task.update(completed=completed, total=threadpool.total)
             counts = NumArray(0, 0, -1)
@@ -372,7 +374,8 @@ def map_unordered_concurrex(
     maxsize: int,
     num_workers: int,
     progress: ProgressT,
+    daemon: Optional[bool] = True,
 ) -> Iterator[Result[T]]:
-    tp_cm: ThreadPool[T] = ThreadPool(num_workers, progress)
+    tp_cm: ThreadPool[T] = ThreadPool(num_workers, progress, daemon)
     with tp_cm as tp:
         yield from tp.map_unordered(func, it, maxsize)
