@@ -118,8 +118,8 @@ def map_unordered_semaphore(
 
     assert maxsize >= num_workers
 
-    in_q: "SimpleQueue[Union[Type[_Done], S]]" = SimpleQueue()
-    out_q: "SimpleQueue[Optional[Result[T]]]" = SimpleQueue()
+    in_q: SimpleQueue[Union[Type[_Done], S]] = SimpleQueue()
+    out_q: SimpleQueue[Optional[Result[T]]] = SimpleQueue()
     update = {"total": 0}
     semaphore = make_semaphore(maxsize)
     threads: List[MyThread] = []
@@ -231,8 +231,8 @@ def map_unordered_boundedqueue(
     - daemon: Whether the threads should be daemonized (default: True).
     """
 
-    in_q: "Queue[Union[Type[_Done], S]]" = Queue(maxsize)
-    out_q: "Queue[Optional[Result[T]]]" = Queue(maxsize)
+    in_q: Queue[Union[Type[_Done], S]] = Queue(maxsize)
+    out_q: Queue[Optional[Result[T]]] = Queue(maxsize)
     threads: List[threading.Thread] = []
     update = {"total": 0}
     object_id = get_object_id(logger, "map_unordered_boundedqueue")

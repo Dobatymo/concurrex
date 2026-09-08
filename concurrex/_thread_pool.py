@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 from queue import Empty, Queue, SimpleQueue
+from types import TracebackType
 from typing import Callable, Generic, Iterable, Iterator, List, NamedTuple, Optional, Tuple, Type, TypeVar, Union
 
 from genutility.callbacks import Progress as ProgressT
@@ -34,8 +35,6 @@ class NumTasks(NamedTuple):
 
 class NoOutstandingResults(Exception):
     """This exception is raised when there are no further tasks in the thread pool."""
-
-    pass
 
 
 class _Stop:
@@ -326,7 +325,12 @@ class ThreadPool(Generic[T]):
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         if exc_value is not None:
             num = self._drain_input_queue()
             logger.debug("Caught %s, drained input queue (%d items)", exc_type.__name__, num, extra=get_extra(self))

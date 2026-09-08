@@ -1,7 +1,8 @@
 import logging
 import threading
 from queue import Queue
-from typing import Any, Callable, Iterable, Iterator, List, Optional, TypeVar
+from types import TracebackType
+from typing import Any, Callable, Iterable, Iterator, List, Optional, Type, TypeVar
 
 from typing_extensions import ParamSpec, Self
 
@@ -55,7 +56,12 @@ class ThreadedIterator(Iterator[T]):
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *args):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         self.close()
 
     def __next__(self) -> T:
@@ -150,7 +156,12 @@ class PeriodicExecutor(threading.Thread):
     def __enter__(self):
         self.start()
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         self.stop()
 
     def run(self) -> None:

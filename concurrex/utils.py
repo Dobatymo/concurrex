@@ -198,7 +198,7 @@ def join_all_incremental(
     remaining_objs = list(objs)
     with MeasureTime() as dt:
         while remaining_objs:
-            objs_waiting: List[Union[threading.Thread, "Process"]] = []
+            objs_waiting: List[Union[threading.Thread, Process]] = []
             for obj in remaining_objs:
                 if total_timeout is not None:
                     effective_timeout = min(per_wait_timeout, max(0.0, total_timeout - dt.get()))
@@ -250,7 +250,7 @@ def debug_join(
 
 
 class Result(Generic[T]):
-    __slots__ = ("result", "exception")
+    __slots__ = ("exception", "result")
 
     def __init__(
         self,
@@ -328,7 +328,7 @@ class CvWindow:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
         if self.cleanup:
             self.cv2.destroyWindow(self.name)
 

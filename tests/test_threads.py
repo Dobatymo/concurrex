@@ -101,7 +101,7 @@ def identity_sleep(x: T, *, seconds: float) -> T:
 
 
 def identity_random_sleep(x: T) -> T:
-    sleep(random() / 10)  # nosec
+    sleep(random() / 10)  # noqa: S311
     return x
 
 

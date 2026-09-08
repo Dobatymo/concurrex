@@ -1,6 +1,7 @@
 import ctypes
 import logging
 import threading
+from types import TracebackType
 from typing import Callable, Optional, Type, Union
 
 from typing_extensions import Self
@@ -43,7 +44,12 @@ class ThreadingExceptHook:
         threading.excepthook = self.new_excepthook
         return self
 
-    def __exit__(self, *args):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         threading.excepthook = self.old_excepthook
 
 
@@ -64,7 +70,7 @@ class MyThread(threading.Thread):
         if self.is_alive():
             assert self.native_id is not None
             kill_thread(self.native_id, exitcode)
-            logging.info("killed thread", self.native_id)
+            logging.info("killed thread %s", self.native_id)
             return True
         return False
 

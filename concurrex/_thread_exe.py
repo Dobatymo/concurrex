@@ -44,7 +44,7 @@ def _queue_reader(q: "Queue[Optional[Future[T]]]") -> Iterator[Result[T]]:
 def map_ordered_executor(
     func: Callable[[S], T], it: Iterable[S], maxsize: int, num_workers: int, daemon: Optional[bool] = True
 ) -> Iterator[Result[T]]:
-    q: "Queue[Optional[Future[T]]]" = Queue(maxsize)
+    q: Queue[Optional[Future[T]]] = Queue(maxsize)
     object_id = get_object_id(logger, "map_ordered_executor")
 
     with ThreadPoolExecutor(num_workers) as ex:
@@ -92,7 +92,7 @@ def _process_queue(
             if item is _Done:
                 break
 
-            future: "Future[T]" = Future()
+            future: Future[T] = Future()
             future._waiters.append(waiter)
             futures.add(future)
             executor.submit(future, func, item)
@@ -129,8 +129,8 @@ def map_unordered_executor_in_thread(
 ) -> Iterator[Result[T]]:
     """has some race conditions and/or deadlocks"""
 
-    q: "Queue[Union[Type[_Done], S]]" = Queue(maxsize)
-    futures: "Set[Future[T]]" = set()
+    q: Queue[Union[Type[_Done], S]] = Queue(maxsize)
+    futures: Set[Future[T]] = set()
     waiter = _AsCompletedWaiter()
     object_id = get_object_id(logger, "map_unordered_executor_in_thread")
 
